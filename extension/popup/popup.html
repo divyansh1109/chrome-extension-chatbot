@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Webpage Chatbot</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Header -->
+      <div id="header">
+        <h1>🤖 Page Chat</h1>
+        <div id="header-actions">
+          <button id="btn-reset" title="Re-index page">⟳</button>
+        </div>
+      </div>
+
+      <!-- Status bar -->
+      <div id="status-bar">
+        <span id="status-text">Initializing…</span>
+      </div>
+
+      <!-- Chat messages -->
+      <div id="chat-container">
+        <div id="messages"></div>
+      </div>
+
+      <!-- Input area -->
+      <div id="input-area">
+        <textarea
+          id="user-input"
+          placeholder="Ask about this page…"
+          rows="1"
+          disabled
+        ></textarea>
+        <button id="btn-voice" title="Voice input" disabled>🎤</button>
+        <button id="btn-send" title="Send" disabled>➤</button>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
