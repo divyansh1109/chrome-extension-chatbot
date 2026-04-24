@@ -1,15 +1,38 @@
 /**
  * Background service worker for the Webpage Chatbot extension.
- * Manages communication between the popup, content script, and backend server.
+ * Manages communication between the panel (iframe), content script, and backend.
+ * Sessions are persisted in chrome.storage.session to survive SW restarts.
  */
 
 const API_BASE = "http://127.0.0.1:8765";
 
-/**
- * Store session data keyed by tab ID.
- * { [tabId]: { sessionId, url, title, chunkCount } }
- */
-const tabSessions = {};
+// ── Session storage helpers (survive SW idle restarts) ────────
+
+async function loadSessions() {
+  const data = await chrome.storage.session.get("tabSessions");
+  return data.tabSessions || {};
+}
+
+async function saveSessions(sessions) {
+  await chrome.storage.session.set({ tabSessions: sessions });
+}
+
+async function getTabSession(tabId) {
+  const sessions = await loadSessions();
+  return sessions[tabId] || null;
+}
+
+async function setTabSession(tabId, session) {
+  const sessions = await loadSessions();
+  sessions[tabId] = session;
+  await saveSessions(sessions);
+}
+
+async function removeTabSession(tabId) {
+  const sessions = await loadSessions();
+  delete sessions[tabId];
+  await saveSessions(sessions);
+}
 
 // ── Helper: call backend API ─────────────────────────────────
 
@@ -26,13 +49,33 @@ async function apiRequest(path, options = {}) {
   return resp.json();
 }
 
+// ── Ensure content script is present ─────────────────────────
+
+async function ensureContentScript(tabId) {
+  const response = await chrome.tabs.sendMessage(tabId, {
+    type: "EXTRACT_PAGE_CONTENT",
+  }).catch(() => null);
+
+  if (response && response.success) {
+    return response;
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"],
+  });
+
+  const retryResponse = await chrome.tabs.sendMessage(tabId, {
+    type: "EXTRACT_PAGE_CONTENT",
+  }).catch(() => null);
+
+  return retryResponse;
+}
+
 // ── Create a session for a tab ───────────────────────────────
 
 async function initSession(tabId) {
-  // Ask the content script to extract page text
-  const [response] = await chrome.tabs.sendMessage(tabId, {
-    type: "EXTRACT_PAGE_CONTENT",
-  }).then((r) => [r]).catch(() => [null]);
+  const response = await ensureContentScript(tabId);
 
   if (!response || !response.success) {
     throw new Error(response?.error || "Failed to extract page content.");
@@ -40,28 +83,28 @@ async function initSession(tabId) {
 
   const { url, title, text_content } = response.data;
 
-  // Send to backend to build vectorstore
   const session = await apiRequest("/session", {
     method: "POST",
     body: JSON.stringify({ url, title, text_content }),
   });
 
-  tabSessions[tabId] = {
+  const sessionData = {
     sessionId: session.session_id,
     url: session.url,
     title: session.title,
     chunkCount: session.chunk_count,
   };
 
-  return tabSessions[tabId];
+  await setTabSession(tabId, sessionData);
+  return sessionData;
 }
 
 // ── Chat with backend ────────────────────────────────────────
 
 async function chat(tabId, question) {
-  const session = tabSessions[tabId];
+  const session = await getTabSession(tabId);
   if (!session) {
-    throw new Error("No session for this tab. Please reload the page.");
+    throw new Error("No session for this tab. Click ⟳ to re-index the page.");
   }
 
   return apiRequest("/chat", {
@@ -73,79 +116,98 @@ async function chat(tabId, question) {
   });
 }
 
+// ── Extension icon click → toggle side panel ─────────────────
+
+chrome.action.onClicked.addListener(async (tab) => {
+  // Ensure content script is injected, then toggle
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" });
+  } catch {
+    // Content script not loaded yet — inject then toggle
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content.js"],
+    });
+    await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" });
+  }
+});
+
 // ── Clean up on tab close ────────────────────────────────────
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  const session = tabSessions[tabId];
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const session = await getTabSession(tabId);
   if (session) {
     apiRequest(`/session/${session.sessionId}`, { method: "DELETE" }).catch(
       () => {}
     );
-    delete tabSessions[tabId];
+    await removeTabSession(tabId);
   }
 });
 
-// Re-init session on navigation
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === "complete" && tabSessions[tabId]) {
-    // URL changed — invalidate old session
-    chrome.tabs.get(tabId, (tab) => {
-      if (tab && tab.url !== tabSessions[tabId].url) {
-        apiRequest(`/session/${tabSessions[tabId].sessionId}`, {
-          method: "DELETE",
-        }).catch(() => {});
-        delete tabSessions[tabId];
-      }
-    });
+// Re-init session on navigation to a different URL
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete") {
+    const session = await getTabSession(tabId);
+    if (session && tab.url !== session.url) {
+      apiRequest(`/session/${session.sessionId}`, {
+        method: "DELETE",
+      }).catch(() => {});
+      await removeTabSession(tabId);
+    }
   }
 });
 
-// ── Message handler from popup ───────────────────────────────
+// ── Message handler from panel iframe ────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handler = async () => {
     try {
+      // Determine the tab: if sent from the iframe inside a content script,
+      // sender.tab is the page tab. Otherwise fall back to active tab.
+      let tabId;
+      if (sender.tab) {
+        tabId = sender.tab.id;
+      } else {
+        const [tab] = await chrome.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
+        if (!tab) throw new Error("No active tab found.");
+        tabId = tab.id;
+      }
+
       switch (message.type) {
         case "INIT_SESSION": {
-          const [tab] = await chrome.tabs.query({
-            active: true,
-            currentWindow: true,
-          });
-          if (!tab) throw new Error("No active tab found.");
-
-          // Return existing session or create new
-          if (tabSessions[tab.id]) {
-            return { success: true, session: tabSessions[tab.id] };
+          const existing = await getTabSession(tabId);
+          if (existing) {
+            return { success: true, session: existing };
           }
-          const session = await initSession(tab.id);
+          const session = await initSession(tabId);
           return { success: true, session };
         }
 
         case "CHAT": {
-          const [tab] = await chrome.tabs.query({
-            active: true,
-            currentWindow: true,
-          });
-          if (!tab) throw new Error("No active tab found.");
-          const result = await chat(tab.id, message.question);
+          const result = await chat(tabId, message.question);
           return { success: true, ...result };
         }
 
         case "RESET_SESSION": {
-          const [tab] = await chrome.tabs.query({
-            active: true,
-            currentWindow: true,
-          });
-          if (!tab) throw new Error("No active tab found.");
-          if (tabSessions[tab.id]) {
+          const existing = await getTabSession(tabId);
+          if (existing) {
             await apiRequest(
-              `/session/${tabSessions[tab.id].sessionId}`,
+              `/session/${existing.sessionId}`,
               { method: "DELETE" }
             ).catch(() => {});
-            delete tabSessions[tab.id];
+            await removeTabSession(tabId);
           }
-          const session = await initSession(tab.id);
+          const session = await initSession(tabId);
           return { success: true, session };
+        }
+
+        case "CLOSE_PANEL": {
+          // Forward close message to the content script in the tab
+          await chrome.tabs.sendMessage(tabId, { type: "CLOSE_PANEL" });
+          return { success: true };
         }
 
         default:
@@ -157,5 +219,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   };
 
   handler().then(sendResponse);
-  return true; // async response
+  return true;
 });

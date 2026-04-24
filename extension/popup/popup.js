@@ -11,6 +11,7 @@ const inputEl = document.getElementById("user-input");
 const btnSend = document.getElementById("btn-send");
 const btnVoice = document.getElementById("btn-voice");
 const btnReset = document.getElementById("btn-reset");
+const btnClose = document.getElementById("btn-close");
 const statusText = document.getElementById("status-text");
 const statusBar = document.getElementById("status-bar");
 
@@ -267,6 +268,11 @@ btnReset.addEventListener("click", async () => {
   } else {
     setStatus(resp?.error || "Failed to reset session.", "error");
   }
+});
+
+btnClose.addEventListener("click", () => {
+  // Tell the background to forward CLOSE_PANEL to the content script
+  chrome.runtime.sendMessage({ type: "CLOSE_PANEL" });
 });
 
 // ── Init ─────────────────────────────────────────────────────
