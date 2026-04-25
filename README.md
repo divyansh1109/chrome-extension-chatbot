@@ -4,6 +4,18 @@ A Chrome extension that lets you **chat about any webpage** you're viewing. Ask 
 
 **Target audience:** General web users, online shoppers, researchers, students — anyone who wants to interrogate page content conversationally.
 
+### Key Features
+
+- **Streaming chat** — token-by-token SSE responses for real-time typing effect
+- **Multi-tab context** — query across multiple open tabs simultaneously (e.g. compare products)
+- **Chat history persistence** — conversation survives popup close/reopen within the same tab session
+- **Source highlighting** — click a source to scroll-to and highlight the relevant text on the page
+- **Dynamic page support** — MutationObserver detects significant DOM changes and auto-re-indexes
+- **Live tab detection** — new browser tabs appear in the multi-tab selector automatically
+- **LLM fallback chain** — OpenAI → Ollama (Gemma 2 / Qwen2.5) waterfall so the extension never breaks
+- **Rate limiting** — server-side rate limits via slowapi to prevent abuse
+- **Deployable** — runs locally or on Railway / any cloud host
+
 ---
 
 ## Architecture Overview
@@ -27,6 +39,7 @@ A Chrome extension that lets you **chat about any webpage** you're viewing. Ask 
 │  │    /session  →  build RAG  │  │
 │  │    /chat     →  query RAG  │  │
 │  │    /chat/stream → SSE RAG  │  │
+│  │    /chat/multi  → multi-tab│  │
 │  ├────────────────────────────┤  │
 │  │  LangChain + FAISS         │  │
 │  │  OpenAI (primary)          │  │
@@ -42,7 +55,9 @@ A Chrome extension that lets you **chat about any webpage** you're viewing. Ask 
 2. **Content script** strips noise (nav, footer, scripts, ads), extracts `<script type="application/ld+json">` structured data (product info, reviews, etc.), detects page language, and returns the data.
 3. **Background worker** sends text + structured data + language to `POST /session` → backend splits it into chunks, embeds them into a FAISS vector index, and returns a session ID.
 4. **User asks a question** → `POST /chat/stream` → backend retrieves the most relevant chunks, feeds them + chat history to the LLM, and **streams tokens back** via Server-Sent Events.
-5. **Tab closed / URL changed** → `DELETE /session/:id` cleans up server memory.
+5. **Multi-tab query** *(optional)* → `POST /chat/multi` retrieves from multiple sessions' vectorstores, merges results with tab attribution, and streams the answer.
+6. **Dynamic page update** → MutationObserver detects significant content changes → auto-re-indexes the page without user intervention.
+7. **Tab closed / URL changed** → `DELETE /session/:id` cleans up server memory.
 
 ---
 
@@ -143,7 +158,7 @@ chrome_ext_chatbot/
 |---|---|---|
 | `OPENAI_API_KEY` | *(required)* | Your OpenAI API key |
 | `CHAT_MODEL` | `gpt-4o-mini` | Primary LLM model name |
-| `CHUNK_SIZE` | `1000` | Text chunk size (chars) for splitting |
+| `CHUNK_SIZE` | `1500` | Text chunk size (chars) for splitting |
 | `CHUNK_OVERLAP` | `200` | Overlap between chunks |
 | `HOST` | `127.0.0.1` | Server bind address |
 | `PORT` | `8765` | Server port |
@@ -162,8 +177,11 @@ chrome_ext_chatbot/
 | `POST` | `/session` | Index page content → returns `session_id` |
 | `POST` | `/chat` | Ask a question → returns AI answer |
 | `POST` | `/chat/stream` | Ask a question → streams tokens via SSE |
+| `POST` | `/chat/multi` | Multi-tab query → streams answer with tab attribution via SSE |
 | `DELETE` | `/session/{id}` | Delete a session |
 | `GET` | `/docs` | Interactive Swagger docs |
+
+**Rate limits** (via slowapi): `/session` 10/min, `/chat` 20/min, `/chat/stream` 20/min, `/chat/multi` 10/min.
 
 ---
 
@@ -244,14 +262,58 @@ The backend uses a **waterfall fallback** pattern so the extension never breaks 
 
 ## Streaming
 
-## Streaming
-
 Chat responses are **streamed token-by-token** via Server-Sent Events (SSE):
 
 - Backend endpoint `POST /chat/stream` yields `data: {"token": "..."}` events
 - The popup renders tokens incrementally as they arrive — no waiting for the full response
 - A final `data: {"done": true, "sources": [...]}` event signals completion
 - The background worker uses a Chrome port (`chrome.runtime.connect`) to relay tokens to the popup
+
+---
+
+## Multi-Tab Context
+
+Query across multiple open browser tabs simultaneously — useful for comparing products, cross-referencing articles, or aggregating information:
+
+1. Click the **⊞** button in the chat header to toggle multi-tab mode
+2. A tab selector bar appears showing all open browser tabs (with indexing status)
+3. Check the tabs you want to include → unindexed tabs are indexed on-demand
+4. Ask a question → the backend retrieves from all selected vectorstores and merges results
+5. Sources in the answer include **tab attribution** so you know which tab each fact came from
+
+**Live tab detection:** When you open a new browser tab, it automatically appears in the multi-tab selector (no manual refresh needed). Previously selected tabs stay checked across updates.
+
+---
+
+## Chat History Persistence
+
+Conversation history is stored in `chrome.storage.session` and survives popup close/reopen within the same browser session:
+
+- Messages persist per-tab — reopening the popup on the same page restores the full conversation
+- History is cleared when you reset the session (⟳ button), close the tab, or navigate to a new URL
+- Uses Chrome's session storage (not synced across devices, cleared when browser closes)
+
+---
+
+## Source Highlighting
+
+When the AI cites sources from the page, each source is **clickable**:
+
+- Click a source → the page scrolls to the matching text and highlights it in yellow
+- Uses the TreeWalker + Range API for precise text matching across DOM nodes
+- Highlights are cleared automatically when new highlights are applied or on reset
+- Multi-tab sources show which tab the source came from
+
+---
+
+## Dynamic Page Support (MutationObserver)
+
+Pages that update via JavaScript after initial load (e.g. Amazon price changes, SPA navigations, infinite scroll) are handled automatically:
+
+- A `MutationObserver` watches `document.body` for `childList`, `subtree`, and `characterData` mutations
+- Changes are **debounced** (3-second window) to avoid firing on every tiny DOM update
+- Only triggers re-indexing when content changes by **15%+** (length heuristic + content sampling)
+- On significant change: the old session is deleted, page is re-indexed, and the chat continues with fresh context
 
 ---
 
@@ -287,11 +349,11 @@ Sessions are per-tab and auto-evicted after 30 minutes of inactivity (max 50 con
 
 | Challenge | Impact | Workaround |
 |---|---|---|
-| **JS-rendered SPAs** | Content script may miss dynamically loaded content | Click the ⟳ reset button after the page fully loads; or increase `run_at` delay |
-| **Very large pages** | Content truncated at 100K chars | Increase limit in `content.js`; consider chunking strategy tuning |
+| **JS-rendered SPAs** | Content script may miss dynamically loaded content | MutationObserver auto-re-indexes on significant DOM changes; click ⟳ as fallback |
+| **Very large pages** | Content truncated at 30K chars, max 30 chunks | Increase limits in `content.js` / `chain.py`; consider chunking strategy tuning |
 | **Cross-origin iframes** | Cannot access content inside iframes from different origins | Chrome security model limitation — no workaround |
 | **Rate limits** | OpenAI API rate limits on heavy use | Use `gpt-4o-mini` (cheaper/faster); add client-side throttling |
-| **Performance** | Initial indexing takes 2-5s depending on page size | Show loading indicator (implemented); consider streaming responses |
+| **Performance** | Initial indexing takes 2-5s depending on page size | Show loading indicator (implemented); indexing runs off-thread via `run_in_executor`; 60s timeout on fetch |
 | **Scraping restrictions** | Some sites block content scripts or use shadow DOM | Fallback to `document.body.innerText`; manual text paste as alternative |
 
 ---
@@ -309,12 +371,25 @@ Replace OpenAI with a local model. **Pros:** Fully private, no API cost. **Cons:
 
 ---
 
+## Deployment
+
+The backend can be deployed to [Railway](https://railway.app/) or any cloud host:
+
+```bash
+# railway.toml is included — just link & deploy
+railway link
+railway up
+```
+
+Set `OPENAI_API_KEY` as a Railway environment variable. The server reads `PORT` from the environment automatically.
+
+Update `API_BASE` in `extension/background.js` to point to your deployed URL (e.g. `https://your-app.up.railway.app`).
+
+---
+
 ## Future Enhancements
 
-- **Streaming responses** via SSE for real-time typing effect
 - **PDF / file viewer support** (extract text from embedded PDFs)
-- **Highlight source text** on the page when showing answer sources
-- **Multi-tab context** — ask questions across several open tabs
 - **Summarize on open** — auto-generate a TL;DR when the popup opens
 - **Export chat** — save conversation as markdown
 - **Custom prompts** — let users define system prompts for different use cases
