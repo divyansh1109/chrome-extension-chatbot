@@ -72,14 +72,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Page content is empty; nothing to chat about.",
             )
 
+        import asyncio
+
         session_id = uuid.uuid4().hex[:12]
-        session = manager.create_session(
-            session_id=session_id,
-            url=payload.url,
-            title=payload.title,
-            text_content=payload.text_content,
-            structured_data=payload.structured_data,
-            language=payload.language,
+        loop = asyncio.get_event_loop()
+        session = await loop.run_in_executor(
+            None,
+            lambda: manager.create_session(
+                session_id=session_id,
+                url=payload.url,
+                title=payload.title,
+                text_content=payload.text_content,
+                structured_data=payload.structured_data,
+                language=payload.language,
+            ),
         )
         return SessionInfo(
             session_id=session.session_id,

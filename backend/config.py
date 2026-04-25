@@ -32,7 +32,7 @@ class Settings:
         return cls(
             openai_api_key=api_key,
             model_name=os.environ.get("CHAT_MODEL", "gpt-4o-mini"),
-            chunk_size=int(os.environ.get("CHUNK_SIZE", "1000")),
+            chunk_size=int(os.environ.get("CHUNK_SIZE", "1500")),
             chunk_overlap=int(os.environ.get("CHUNK_OVERLAP", "200")),
             max_context_tokens=int(os.environ.get("MAX_CONTEXT_TOKENS", "6000")),
             host=os.environ.get("HOST", "0.0.0.0"),

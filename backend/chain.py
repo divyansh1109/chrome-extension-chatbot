@@ -141,6 +141,11 @@ def build_vectorstore(
     if not chunks:
         chunks = ["No meaningful content was found on this page."]
 
+    # Cap chunks to avoid excessive embedding API calls on huge pages
+    MAX_CHUNKS = 30
+    if len(chunks) > MAX_CHUNKS:
+        chunks = chunks[:MAX_CHUNKS]
+
     embeddings = OpenAIEmbeddings(
         openai_api_key=settings.openai_api_key,
         model="text-embedding-3-small",

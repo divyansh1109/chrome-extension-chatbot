@@ -24,7 +24,7 @@ class TestSettingsFromEnv:
             s = Settings.from_env()
             assert s.openai_api_key == "sk-test-key-123"
             assert s.model_name == "gpt-4o-mini"
-            assert s.chunk_size == 1000
+            assert s.chunk_size == 1500
             assert s.chunk_overlap == 200
             assert s.max_context_tokens == 6000
             assert s.host == "0.0.0.0"

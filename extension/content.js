@@ -71,7 +71,7 @@
 
     const source = contentRoot || clone;
     const rawText = source.innerText || source.textContent || "";
-    return rawText.replace(/\s+/g, " ").trim().slice(0, 100_000);
+    return rawText.replace(/\s+/g, " ").trim().slice(0, 30_000);
   }
 
   function getPageMeta() {

@@ -60,15 +60,31 @@ async function clearChatHistory(tabId) {
 
 async function apiRequest(path, options = {}) {
   const url = `${API_BASE}${path}`;
-  const resp = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    throw new Error(body.detail || `API error ${resp.status}`);
+  const timeout = options._timeout || 60000; // 60s default
+  delete options._timeout;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const resp = await fetch(url, {
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      ...options,
+    });
+    clearTimeout(timer);
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      throw new Error(body.detail || `API error ${resp.status}`);
+    }
+    return resp.json();
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === "AbortError") {
+      throw new Error("Request timed out. The page may be too large — try a simpler page.");
+    }
+    throw err;
   }
-  return resp.json();
 }
 
 // ── Ensure content script is present ─────────────────────────
