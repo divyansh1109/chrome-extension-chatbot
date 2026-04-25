@@ -35,7 +35,7 @@ class Settings:
             chunk_size=int(os.environ.get("CHUNK_SIZE", "1000")),
             chunk_overlap=int(os.environ.get("CHUNK_OVERLAP", "200")),
             max_context_tokens=int(os.environ.get("MAX_CONTEXT_TOKENS", "6000")),
-            host=os.environ.get("HOST", "127.0.0.1"),
+            host=os.environ.get("HOST", "0.0.0.0"),
             port=int(os.environ.get("PORT", "8765")),
             cors_origins=[o.strip() for o in origins_raw.split(",")],
             ollama_base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),

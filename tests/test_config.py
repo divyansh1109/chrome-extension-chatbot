@@ -27,7 +27,7 @@ class TestSettingsFromEnv:
             assert s.chunk_size == 1000
             assert s.chunk_overlap == 200
             assert s.max_context_tokens == 6000
-            assert s.host == "127.0.0.1"
+            assert s.host == "0.0.0.0"
             assert s.port == 8765
             assert s.cors_origins == ["chrome-extension://*"]
             assert s.ollama_base_url == "http://localhost:11434"

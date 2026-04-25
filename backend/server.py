@@ -6,9 +6,12 @@ import json
 import logging
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import StreamingResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from starlette.responses import JSONResponse, StreamingResponse
 
 from backend.config import Settings
 from backend.models import ChatRequest, ChatResponse, PageContent, SessionInfo
@@ -17,16 +20,31 @@ from backend.session_manager import SessionManager
 logger = logging.getLogger(__name__)
 
 
+def _create_limiter() -> Limiter:
+    return Limiter(key_func=get_remote_address)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Application factory."""
     if settings is None:
         settings = Settings.from_env()
+
+    rate_limiter = _create_limiter()
 
     app = FastAPI(
         title="Webpage Chatbot API",
         version="0.1.0",
         docs_url="/docs",
     )
+
+    app.state.limiter = rate_limiter
+
+    @app.exception_handler(RateLimitExceeded)
+    async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Please slow down."},
+        )
 
     app.add_middleware(
         CORSMiddleware,
@@ -45,7 +63,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/session", response_model=SessionInfo)
-    async def create_session(payload: PageContent):
+    @rate_limiter.limit("10/minute")
+    async def create_session(request: Request, payload: PageContent):
         """Receive page content from the extension and build a chat session."""
         if not payload.text_content.strip():
             raise HTTPException(
@@ -70,7 +89,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/chat", response_model=ChatResponse)
-    async def chat(req: ChatRequest):
+    @rate_limiter.limit("20/minute")
+    async def chat(request: Request, req: ChatRequest):
         """Answer a user question using the session's retrieval chain."""
         session = manager.get_session(req.session_id)
         if not session:
@@ -96,7 +116,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/chat/stream")
-    async def chat_stream(req: ChatRequest):
+    @rate_limiter.limit("20/minute")
+    async def chat_stream(request: Request, req: ChatRequest):
         """Stream tokens back as Server-Sent Events."""
         session = manager.get_session(req.session_id)
         if not session:

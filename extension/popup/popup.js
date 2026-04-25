@@ -110,7 +110,7 @@ async function initSession() {
     const errMsg = resp?.error || "Could not connect to the backend server.";
     setStatus(errMsg, "error");
     addMessage(
-      `⚠️ ${errMsg}\n\nMake sure the backend server is running on http://127.0.0.1:8765`,
+      `⚠️ ${errMsg}`,
       "bot",
       { isError: true }
     );

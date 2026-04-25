@@ -4,7 +4,7 @@
  * Sessions are persisted in chrome.storage.session to survive SW restarts.
  */
 
-const API_BASE = "http://127.0.0.1:8765";
+const API_BASE = "https://your-app.railway.app"; // ← replace with your deployed Railway URL
 
 // ── Session storage helpers (survive SW idle restarts) ────────
 

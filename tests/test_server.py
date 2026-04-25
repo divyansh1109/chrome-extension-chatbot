@@ -18,7 +18,7 @@ def settings():
         chunk_size=500,
         chunk_overlap=100,
         max_context_tokens=4000,
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=8765,
         cors_origins=["*"],
         ollama_base_url="http://localhost:11434",

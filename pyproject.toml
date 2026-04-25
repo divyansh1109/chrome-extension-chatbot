@@ -15,6 +15,7 @@ dependencies = [
     "langchain-text-splitters>=0.3,<1",
     "faiss-cpu>=1.9,<2",
     "python-dotenv>=1,<2",
+    "slowapi>=0.1,<1",
 ]
 
 [project.optional-dependencies]
