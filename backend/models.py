@@ -1,5 +1,7 @@
 """Pydantic models for API request/response validation."""
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -9,6 +11,14 @@ class PageContent(BaseModel):
     url: str = Field(..., description="The URL of the current page")
     title: str = Field("", description="Page title")
     text_content: str = Field(..., description="Extracted text from the page")
+    structured_data: list[dict[str, Any]] | None = Field(
+        None,
+        description="JSON-LD structured data extracted from <script type='application/ld+json'> blocks",
+    )
+    language: str = Field(
+        "",
+        description="Page language from document.documentElement.lang (e.g. 'en', 'zh', 'ja')",
+    )
 
 
 class ChatRequest(BaseModel):

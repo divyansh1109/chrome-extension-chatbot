@@ -30,6 +30,9 @@ class TestSettingsFromEnv:
             assert s.host == "127.0.0.1"
             assert s.port == 8765
             assert s.cors_origins == ["chrome-extension://*"]
+            assert s.ollama_base_url == "http://localhost:11434"
+            assert s.fallback_model == "gemma2:9b"
+            assert s.multilingual_model == "qwen2.5:7b"
 
     def test_custom_values(self):
         env = {
@@ -41,6 +44,9 @@ class TestSettingsFromEnv:
             "HOST": "0.0.0.0",
             "PORT": "9999",
             "CORS_ORIGINS": "http://localhost:3000, http://example.com",
+            "OLLAMA_BASE_URL": "http://gpu-box:11434",
+            "FALLBACK_MODEL": "gemma2:2b",
+            "MULTILINGUAL_MODEL": "qwen2.5:3b",
         }
         with patch.dict(os.environ, env, clear=True):
             s = Settings.from_env()
@@ -49,6 +55,9 @@ class TestSettingsFromEnv:
             assert s.chunk_overlap == 100
             assert s.port == 9999
             assert s.cors_origins == ["http://localhost:3000", "http://example.com"]
+            assert s.ollama_base_url == "http://gpu-box:11434"
+            assert s.fallback_model == "gemma2:2b"
+            assert s.multilingual_model == "qwen2.5:3b"
 
     def test_settings_are_frozen(self):
         env = {"OPENAI_API_KEY": "sk-test"}

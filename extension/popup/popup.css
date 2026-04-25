@@ -220,8 +220,7 @@ body {
   opacity: 0.5;
 }
 
-#btn-send,
-#btn-voice {
+#btn-send {
   width: 34px;
   height: 34px;
   border: none;
@@ -236,30 +235,13 @@ body {
   flex-shrink: 0;
 }
 
-#btn-send:hover,
-#btn-voice:hover {
+#btn-send:hover {
   background: var(--accent-hover);
 }
 
-#btn-send:disabled,
-#btn-voice:disabled {
+#btn-send:disabled {
   opacity: 0.4;
   cursor: not-allowed;
-}
-
-#btn-voice.recording {
-  background: var(--error);
-  animation: pulse 1s infinite;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.5);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(255, 107, 107, 0);
-  }
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────── */

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import StreamingResponse
 
 from backend.config import Settings
 from backend.models import ChatRequest, ChatResponse, PageContent, SessionInfo
@@ -57,6 +59,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             url=payload.url,
             title=payload.title,
             text_content=payload.text_content,
+            structured_data=payload.structured_data,
+            language=payload.language,
         )
         return SessionInfo(
             session_id=session.session_id,
@@ -89,6 +93,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             answer=result["answer"],
             session_id=req.session_id,
             sources=sources,
+        )
+
+    @app.post("/chat/stream")
+    async def chat_stream(req: ChatRequest):
+        """Stream tokens back as Server-Sent Events."""
+        session = manager.get_session(req.session_id)
+        if not session:
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found. Please reload the page to start a new session.",
+            )
+
+        import asyncio
+
+        _STREAM_END = object()
+
+        def _next_token(gen):
+            """Wrapper around next() that converts StopIteration to a sentinel."""
+            try:
+                return next(gen)
+            except StopIteration as e:
+                return _STREAM_END, e.value
+
+        async def event_generator():
+            loop = asyncio.get_event_loop()
+            gen = await loop.run_in_executor(
+                None,
+                lambda: session.chat_session.stream(req.question),
+            )
+            sources = []
+            try:
+                while True:
+                    result = await loop.run_in_executor(None, _next_token, gen)
+                    if isinstance(result, tuple) and result[0] is _STREAM_END:
+                        meta = result[1] or {}
+                        sources = meta.get("source_documents", [])
+                        break
+                    yield f"data: {json.dumps({'token': result})}\n\n"
+            except Exception:
+                logger.exception(
+                    "Streaming failed for session %s", req.session_id
+                )
+                yield f"data: {json.dumps({'error': 'Stream failed'})}\n\n"
+                return
+            yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     @app.delete("/session/{session_id}")

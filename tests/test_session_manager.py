@@ -20,6 +20,9 @@ def mock_settings():
         host="127.0.0.1",
         port=8765,
         cors_origins=["*"],
+        ollama_base_url="http://localhost:11434",
+        fallback_model="gemma2:9b",
+        multilingual_model="qwen2.5:7b",
     )
 
 

@@ -1,5 +1,6 @@
 """Integration tests for the FastAPI server endpoints."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,9 @@ def settings():
         host="127.0.0.1",
         port=8765,
         cors_origins=["*"],
+        ollama_base_url="http://localhost:11434",
+        fallback_model="gemma2:9b",
+        multilingual_model="qwen2.5:7b",
     )
 
 
@@ -72,6 +76,39 @@ class TestCreateSession:
         assert data["url"] == "https://example.com/product"
         assert data["chunk_count"] == 7
 
+    @patch("backend.session_manager.ChatSession")
+    @patch("backend.session_manager.build_vectorstore")
+    def test_creates_session_with_structured_data(
+        self, mock_build_vs, mock_chat_session_cls, client
+    ):
+        mock_vs = MagicMock()
+        mock_vs.index.ntotal = 10
+        mock_build_vs.return_value = mock_vs
+        mock_chat_session_cls.return_value = MagicMock()
+
+        structured_data = [
+            {
+                "@type": "Product",
+                "name": "Sony WH-1000XM5",
+                "offers": {"@type": "Offer", "price": "299.99", "priceCurrency": "USD"},
+            }
+        ]
+
+        resp = client.post(
+            "/session",
+            json={
+                "url": "https://example.com/product",
+                "title": "Sony Headphones",
+                "text_content": "Sony headphones page content.",
+                "structured_data": structured_data,
+            },
+        )
+        assert resp.status_code == 200
+        # Verify build_vectorstore was called with structured_data
+        mock_build_vs.assert_called_once()
+        call_kwargs = mock_build_vs.call_args
+        assert call_kwargs[1]["structured_data"] == structured_data
+
 
 class TestChatEndpoint:
     @patch("backend.session_manager.ChatSession")
@@ -112,6 +149,69 @@ class TestChatEndpoint:
     def test_chat_with_unknown_session(self, client):
         resp = client.post(
             "/chat",
+            json={"session_id": "nonexistent", "question": "Hello?"},
+        )
+        assert resp.status_code == 404
+
+
+class TestChatStreamEndpoint:
+    @patch("backend.session_manager.ChatSession")
+    @patch("backend.session_manager.build_vectorstore")
+    def test_stream_returns_tokens_and_done(
+        self, mock_build_vs, mock_chat_session_cls, client
+    ):
+        mock_vs = MagicMock()
+        mock_vs.index.ntotal = 3
+        mock_build_vs.return_value = mock_vs
+
+        # Build a mock chat_session with a stream() that yields tokens
+        def fake_stream(question):
+            yield "Hello"
+            yield " world"
+            return {"answer": "Hello world", "source_documents": ["chunk1"]}
+
+        mock_chat = MagicMock()
+        mock_chat.stream = fake_stream
+        mock_chat_session_cls.return_value = mock_chat
+
+        # Create session
+        resp = client.post(
+            "/session",
+            json={
+                "url": "https://example.com",
+                "title": "Test",
+                "text_content": "Some content here.",
+            },
+        )
+        session_id = resp.json()["session_id"]
+
+        # Stream chat
+        resp = client.post(
+            "/chat/stream",
+            json={"session_id": session_id, "question": "Hi?"},
+        )
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+
+        # Parse SSE events
+        events = []
+        for line in resp.text.strip().split("\n"):
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+
+        # Should have token events and a done event
+        token_events = [e for e in events if "token" in e]
+        done_events = [e for e in events if e.get("done")]
+
+        assert len(token_events) == 2
+        assert token_events[0]["token"] == "Hello"
+        assert token_events[1]["token"] == " world"
+        assert len(done_events) == 1
+        assert done_events[0]["sources"] == ["chunk1"]
+
+    def test_stream_with_unknown_session(self, client):
+        resp = client.post(
+            "/chat/stream",
             json={"session_id": "nonexistent", "question": "Hello?"},
         )
         assert resp.status_code == 404

@@ -16,6 +16,9 @@ class Settings:
     host: str
     port: int
     cors_origins: list[str]
+    ollama_base_url: str
+    fallback_model: str
+    multilingual_model: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -35,4 +38,7 @@ class Settings:
             host=os.environ.get("HOST", "127.0.0.1"),
             port=int(os.environ.get("PORT", "8765")),
             cors_origins=[o.strip() for o in origins_raw.split(",")],
+            ollama_base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+            fallback_model=os.environ.get("FALLBACK_MODEL", "gemma2:9b"),
+            multilingual_model=os.environ.get("MULTILINGUAL_MODEL", "qwen2.5:7b"),
         )

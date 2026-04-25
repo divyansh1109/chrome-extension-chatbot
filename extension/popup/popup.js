@@ -1,5 +1,5 @@
 /**
- * Popup UI logic – handles session init, chat, and voice input.
+ * Popup UI logic – handles session init and chat.
  */
 
 "use strict";
@@ -9,7 +9,6 @@
 const messagesEl = document.getElementById("messages");
 const inputEl = document.getElementById("user-input");
 const btnSend = document.getElementById("btn-send");
-const btnVoice = document.getElementById("btn-voice");
 const btnReset = document.getElementById("btn-reset");
 const btnClose = document.getElementById("btn-close");
 const statusText = document.getElementById("status-text");
@@ -18,8 +17,6 @@ const statusBar = document.getElementById("status-bar");
 // ── State ────────────────────────────────────────────────────
 
 let isProcessing = false;
-let isRecording = false;
-let recognition = null; // SpeechRecognition instance
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -31,7 +28,6 @@ function setStatus(text, type = "") {
 function setInputEnabled(enabled) {
   inputEl.disabled = !enabled;
   btnSend.disabled = !enabled;
-  btnVoice.disabled = !enabled;
 }
 
 function scrollToBottom() {
@@ -121,7 +117,7 @@ async function initSession() {
   }
 }
 
-// ── Send a chat message ──────────────────────────────────────
+// ── Send a chat message (streaming) ──────────────────────────
 
 async function sendMessage() {
   const question = inputEl.value.trim();
@@ -135,23 +131,67 @@ async function sendMessage() {
 
   showTyping();
 
-  const resp = await sendToBg({ type: "CHAT", question });
+  // Open a port to the background for streaming
+  const port = chrome.runtime.connect({ name: "chat-stream" });
 
-  hideTyping();
+  let botDiv = null;
+  let fullText = "";
 
-  if (resp && resp.success) {
-    addMessage(resp.answer, "bot", { sources: resp.sources });
-  } else {
-    addMessage(
-      `⚠️ ${resp?.error || "Something went wrong. Please try again."}`,
-      "bot",
-      { isError: true }
-    );
+  port.onMessage.addListener((msg) => {
+    if (msg.error) {
+      hideTyping();
+      if (botDiv) botDiv.remove();
+      addMessage(
+        `⚠️ ${msg.error}`,
+        "bot",
+        { isError: true }
+      );
+      finishStream();
+      port.disconnect();
+      return;
+    }
+
+    if (msg.token !== undefined) {
+      if (!botDiv) {
+        hideTyping();
+        botDiv = addMessage("", "bot");
+      }
+      fullText += msg.token;
+      // Render with simple markdown-like bold and newlines
+      const escaped = fullText
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      botDiv.innerHTML = escaped
+        .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+        .replace(/\n/g, "<br>");
+      scrollToBottom();
+    }
+
+    if (msg.done) {
+      if (!botDiv) {
+        hideTyping();
+        botDiv = addMessage("", "bot");
+      }
+      // Append source info
+      if (msg.sources && msg.sources.length) {
+        const srcDiv = document.createElement("div");
+        srcDiv.className = "sources";
+        srcDiv.textContent = `📄 Based on ${msg.sources.length} page section(s)`;
+        botDiv.appendChild(srcDiv);
+      }
+      finishStream();
+      port.disconnect();
+    }
+  });
+
+  port.postMessage({ type: "CHAT_STREAM", question });
+
+  function finishStream() {
+    isProcessing = false;
+    setInputEnabled(true);
+    inputEl.focus();
   }
-
-  isProcessing = false;
-  setInputEnabled(true);
-  inputEl.focus();
 }
 
 // ── Auto-resize textarea ─────────────────────────────────────
@@ -159,77 +199,6 @@ async function sendMessage() {
 function autoResizeInput() {
   inputEl.style.height = "auto";
   inputEl.style.height = Math.min(inputEl.scrollHeight, 80) + "px";
-}
-
-// ── Voice Input (Web Speech API) ─────────────────────────────
-
-function initVoice() {
-  const SpeechRecognition =
-    window.SpeechRecognition || window.webkitSpeechRecognition;
-
-  if (!SpeechRecognition) {
-    btnVoice.title = "Voice input not supported in this browser";
-    btnVoice.style.display = "none";
-    return;
-  }
-
-  recognition = new SpeechRecognition();
-  recognition.continuous = false;
-  recognition.interimResults = false;
-  recognition.lang = "en-US";
-
-  recognition.onresult = (event) => {
-    const transcript = event.results[0][0].transcript;
-    inputEl.value = transcript;
-    autoResizeInput();
-    stopRecording();
-    // Auto-send after voice input
-    sendMessage();
-  };
-
-  recognition.onerror = (event) => {
-    console.warn("Speech recognition error:", event.error);
-    stopRecording();
-    if (event.error === "not-allowed") {
-      addMessage(
-        "⚠️ Microphone access denied. Please allow microphone in browser settings.",
-        "bot",
-        { isError: true }
-      );
-    }
-  };
-
-  recognition.onend = () => {
-    stopRecording();
-  };
-}
-
-function startRecording() {
-  if (!recognition || isRecording) return;
-  isRecording = true;
-  btnVoice.classList.add("recording");
-  btnVoice.title = "Listening… click to stop";
-  recognition.start();
-}
-
-function stopRecording() {
-  if (!recognition || !isRecording) return;
-  isRecording = false;
-  btnVoice.classList.remove("recording");
-  btnVoice.title = "Voice input";
-  try {
-    recognition.stop();
-  } catch (_) {
-    // already stopped
-  }
-}
-
-function toggleRecording() {
-  if (isRecording) {
-    stopRecording();
-  } else {
-    startRecording();
-  }
 }
 
 // ── Event listeners ──────────────────────────────────────────
@@ -244,8 +213,6 @@ inputEl.addEventListener("keydown", (e) => {
 });
 
 inputEl.addEventListener("input", autoResizeInput);
-
-btnVoice.addEventListener("click", toggleRecording);
 
 btnReset.addEventListener("click", async () => {
   messagesEl.innerHTML = "";
@@ -277,5 +244,4 @@ btnClose.addEventListener("click", () => {
 
 // ── Init ─────────────────────────────────────────────────────
 
-initVoice();
 initSession();

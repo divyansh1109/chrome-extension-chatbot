@@ -9,6 +9,8 @@ from threading import Lock
 
 from langchain_community.vectorstores import FAISS
 
+from typing import Any
+
 from backend.chain import ChatSession, build_vectorstore
 from backend.config import Settings
 
@@ -50,12 +52,19 @@ class SessionManager:
         url: str,
         title: str,
         text_content: str,
+        structured_data: list[dict[str, Any]] | None = None,
+        language: str = "",
     ) -> Session:
         """Build a new session (vectorstore + chain) for a page."""
         self._evict_stale()
 
-        vectorstore = build_vectorstore(text_content, self._settings)
-        chat_session = ChatSession(vectorstore, self._settings)
+        vectorstore = build_vectorstore(
+            text_content, self._settings, structured_data=structured_data,
+        )
+        multilingual = bool(language and not language.lower().startswith("en"))
+        chat_session = ChatSession(
+            vectorstore, self._settings, multilingual=multilingual,
+        )
         chunk_count = vectorstore.index.ntotal
 
         session = Session(

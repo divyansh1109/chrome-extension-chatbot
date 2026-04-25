@@ -10,6 +10,34 @@
   const PANEL_ID = "__webpage-chatbot-panel__";
   const PANEL_WIDTH = 400;
 
+  // ── Structured data extraction (JSON-LD) ────────────────────
+
+  function extractStructuredData() {
+    const scripts = document.querySelectorAll(
+      'script[type="application/ld+json"]'
+    );
+    const results = [];
+
+    for (const script of scripts) {
+      try {
+        const raw = JSON.parse(script.textContent);
+        // JSON-LD can be a single object or an array
+        const items = Array.isArray(raw) ? raw : [raw];
+        for (const item of items) {
+          // Also handle @graph containers (common on e-commerce sites)
+          if (item["@graph"]) {
+            results.push(...item["@graph"]);
+          } else {
+            results.push(item);
+          }
+        }
+      } catch {
+        // Ignore malformed JSON-LD blocks
+      }
+    }
+    return results.length ? results : null;
+  }
+
   // ── Page text extraction ───────────────────────────────────
 
   function extractPageText() {
@@ -80,7 +108,6 @@
 
     const iframe = document.createElement("iframe");
     iframe.src = chrome.runtime.getURL("popup/popup.html");
-    iframe.allow = "microphone"; // for voice input
     Object.assign(iframe.style, {
       width: "100%",
       height: "100%",
@@ -115,6 +142,7 @@
       try {
         const text = extractPageText();
         const meta = getPageMeta();
+        const structured_data = extractStructuredData();
         sendResponse({
           success: true,
           data: {
@@ -122,6 +150,8 @@
             title: document.title,
             text_content: text,
             meta,
+            structured_data,
+            language: document.documentElement.lang || "",
           },
         });
       } catch (err) {

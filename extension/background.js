@@ -81,11 +81,11 @@ async function initSession(tabId) {
     throw new Error(response?.error || "Failed to extract page content.");
   }
 
-  const { url, title, text_content } = response.data;
+  const { url, title, text_content, structured_data, language } = response.data;
 
   const session = await apiRequest("/session", {
     method: "POST",
-    body: JSON.stringify({ url, title, text_content }),
+    body: JSON.stringify({ url, title, text_content, structured_data, language }),
   });
 
   const sessionData = {
@@ -114,6 +114,68 @@ async function chat(tabId, question) {
       question,
     }),
   });
+}
+
+// ── Streaming chat via SSE ───────────────────────────────────
+
+async function chatStream(tabId, question, port) {
+  const session = await getTabSession(tabId);
+  if (!session) {
+    port.postMessage({ error: "No session for this tab. Click ⟳ to re-index the page." });
+    return;
+  }
+
+  let resp;
+  try {
+    resp = await fetch(`${API_BASE}/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: session.sessionId,
+        question,
+      }),
+    });
+  } catch (err) {
+    port.postMessage({ error: err.message });
+    return;
+  }
+
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    port.postMessage({ error: body.detail || `API error ${resp.status}` });
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE lines from the buffer
+      const lines = buffer.split("\n");
+      // Keep the last incomplete line in the buffer
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = JSON.parse(line.slice(6));
+        if (payload.token !== undefined) {
+          port.postMessage({ token: payload.token });
+        } else if (payload.done) {
+          port.postMessage({ done: true, sources: payload.sources || [] });
+        } else if (payload.error) {
+          port.postMessage({ error: payload.error });
+        }
+      }
+    }
+  } catch (err) {
+    port.postMessage({ error: err.message });
+  }
 }
 
 // ── Extension icon click → toggle side panel ─────────────────
@@ -220,4 +282,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   handler().then(sendResponse);
   return true;
+});
+
+// ── Port-based streaming for CHAT_STREAM ─────────────────────
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "chat-stream") return;
+
+  port.onMessage.addListener(async (message) => {
+    // Determine tab id
+    let tabId;
+    if (port.sender && port.sender.tab) {
+      tabId = port.sender.tab.id;
+    } else {
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      if (!tab) {
+        port.postMessage({ error: "No active tab found." });
+        return;
+      }
+      tabId = tab.id;
+    }
+
+    if (message.type === "CHAT_STREAM") {
+      await chatStream(tabId, message.question, port);
+    }
+  });
 });
