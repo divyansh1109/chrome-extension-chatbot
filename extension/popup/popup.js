@@ -314,46 +314,74 @@ btnClose.addEventListener("click", () => {
 
 // ── Multi-tab mode ───────────────────────────────────────────
 
+let tabEntries = []; // { tabId, sessionId, indexed }
+
 btnMulti.addEventListener("click", async () => {
   multiTabMode = !multiTabMode;
   btnMulti.classList.toggle("active", multiTabMode);
   multiTabBar.classList.toggle("hidden", !multiTabMode);
 
   if (multiTabMode) {
-    // Load available tab sessions
+    // Fetch ALL open browser tabs (not just indexed ones)
     const resp = await sendToBg({ type: "LIST_TAB_SESSIONS" });
     multiTabList.innerHTML = "";
     selectedSessionIds = [];
+    tabEntries = [];
 
     if (resp && resp.success && resp.sessions.length > 0) {
       for (const s of resp.sessions) {
+        const entry = { tabId: s.tabId, sessionId: s.sessionId, indexed: s.indexed };
+        tabEntries.push(entry);
+
         const chip = document.createElement("label");
-        chip.className = "tab-chip";
+        chip.className = "tab-chip" + (s.indexed ? "" : " not-indexed");
 
         const cb = document.createElement("input");
         cb.type = "checkbox";
-        cb.value = s.sessionId;
-        cb.addEventListener("change", () => {
+        cb.dataset.tabId = s.tabId;
+
+        cb.addEventListener("change", async () => {
           if (cb.checked) {
-            selectedSessionIds.push(s.sessionId);
+            // If not indexed yet, index it now
+            if (!entry.indexed) {
+              chip.classList.add("indexing");
+              const indexResp = await sendToBg({ type: "INDEX_TAB", tabId: entry.tabId });
+              chip.classList.remove("indexing");
+              if (indexResp && indexResp.success) {
+                entry.sessionId = indexResp.session.sessionId;
+                entry.indexed = true;
+                chip.classList.remove("not-indexed");
+                // Remove the ⏳ indicator
+                const span = chip.querySelector("span");
+                if (span) span.textContent = s.title.slice(0, 35) + (s.title.length > 35 ? "…" : "");
+              } else {
+                cb.checked = false;
+                return;
+              }
+            }
+            if (entry.sessionId) {
+              selectedSessionIds.push(entry.sessionId);
+            }
           } else {
-            selectedSessionIds = selectedSessionIds.filter((id) => id !== s.sessionId);
+            selectedSessionIds = selectedSessionIds.filter((id) => id !== entry.sessionId);
           }
         });
 
         const text = document.createElement("span");
-        text.textContent = s.title.slice(0, 30) + (s.title.length > 30 ? "…" : "");
-        text.title = s.url;
+        const titleLabel = s.title.slice(0, 35) + (s.title.length > 35 ? "…" : "");
+        text.textContent = s.indexed ? titleLabel : `${titleLabel} ⏳`;
+        text.title = s.indexed ? s.url : `${s.url}\n(will be indexed when selected)`;
 
         chip.appendChild(cb);
         chip.appendChild(text);
         multiTabList.appendChild(chip);
       }
     } else {
-      multiTabList.innerHTML = '<span class="no-tabs">No other tabs indexed yet</span>';
+      multiTabList.innerHTML = '<span class="no-tabs">No other tabs open</span>';
     }
   } else {
     selectedSessionIds = [];
+    tabEntries = [];
   }
 });
 

@@ -332,6 +332,22 @@ body {
   font-style: italic;
 }
 
+.tab-chip.not-indexed {
+  opacity: 0.7;
+  border: 1px dashed var(--border);
+}
+
+.tab-chip.indexing {
+  opacity: 0.5;
+  pointer-events: none;
+  animation: pulse-chip 1s infinite;
+}
+
+@keyframes pulse-chip {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
+
 #btn-multi.active {
   background: var(--accent) !important;
   color: #fff !important;

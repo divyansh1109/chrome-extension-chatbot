@@ -389,18 +389,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         case "LIST_TAB_SESSIONS": {
-          // Return all active tab sessions for multi-tab UI
+          // Return ALL open browser tabs, marking which have sessions
           const allSessions = await loadSessions();
+          const tabs = await chrome.tabs.query({});
           const entries = [];
-          for (const [tid, sess] of Object.entries(allSessions)) {
+          for (const tab of tabs) {
+            // Skip chrome:// and extension pages
+            if (!tab.url || tab.url.startsWith("chrome://") || tab.url.startsWith("chrome-extension://")) continue;
+            const sess = allSessions[tab.id];
             entries.push({
-              tabId: Number(tid),
-              sessionId: sess.sessionId,
-              title: sess.title,
-              url: sess.url,
+              tabId: tab.id,
+              sessionId: sess ? sess.sessionId : null,
+              title: tab.title || tab.url,
+              url: tab.url,
+              indexed: !!sess,
             });
           }
           return { success: true, sessions: entries };
+        }
+
+        case "INDEX_TAB": {
+          // Index a specific tab on demand (for multi-tab)
+          const targetTabId = message.tabId;
+          const existing = await getTabSession(targetTabId);
+          if (existing) {
+            return { success: true, session: existing };
+          }
+          const session = await initSession(targetTabId);
+          return { success: true, session };
         }
 
         default:
