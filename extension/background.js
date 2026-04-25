@@ -307,8 +307,31 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       await removeTabSession(tabId);
       await clearChatHistory(tabId);
     }
+
+    // Notify any open panels that a new/updated tab is available
+    // (for live multi-tab refresh)
+    if (tab.url && !tab.url.startsWith("chrome://") && !tab.url.startsWith("chrome-extension://")) {
+      broadcastToAllPanels({ type: "TABS_CHANGED", tabId, title: tab.title, url: tab.url });
+    }
   }
 });
+
+// Also notify when a brand new tab is created
+chrome.tabs.onCreated.addListener((tab) => {
+  // New tabs start with no URL; the onUpdated "complete" event above
+  // will fire once the page loads and broadcast TABS_CHANGED then.
+});
+
+/**
+ * Broadcast a message to all content scripts (which relay to their iframes).
+ * This lets the popup panel auto-refresh the multi-tab list.
+ */
+async function broadcastToAllPanels(message) {
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    chrome.tabs.sendMessage(tab.id, message).catch(() => {});
+  }
+}
 
 // ── Message handler from panel iframe ────────────────────────
 
@@ -406,6 +429,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             });
           }
           return { success: true, sessions: entries };
+        }
+
+        case "PAGE_CONTENT_CHANGED": {
+          // DOM changed significantly — re-index this tab if it has a session
+          const existingSession = await getTabSession(tabId);
+          if (existingSession) {
+            // Delete old session, create new one
+            apiRequest(`/session/${existingSession.sessionId}`, { method: "DELETE" }).catch(() => {});
+            await removeTabSession(tabId);
+            try {
+              const newSession = await initSession(tabId);
+              return { success: true, session: newSession, reindexed: true };
+            } catch {
+              return { success: false, error: "Re-index failed after DOM change." };
+            }
+          }
+          return { success: true, reindexed: false };
         }
 
         case "INDEX_TAB": {

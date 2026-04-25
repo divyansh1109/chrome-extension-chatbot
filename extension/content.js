@@ -172,6 +172,19 @@
       return true;
     }
 
+    if (message.type === "TABS_CHANGED") {
+      // Relay to the popup iframe so it can refresh the multi-tab list
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) {
+        const iframe = panel.querySelector("iframe");
+        if (iframe && iframe.contentWindow) {
+          iframe.contentWindow.postMessage({ type: "TABS_CHANGED" }, "*");
+        }
+      }
+      sendResponse({ success: true });
+      return true;
+    }
+
     if (message.type === "HIGHLIGHT_SOURCE") {
       clearHighlights();
       const found = highlightText(message.text);
@@ -185,6 +198,73 @@
       return true;
     }
   });
+
+  // ── DOM MutationObserver — re-extract on significant changes ─
+
+  let _lastExtractedText = "";
+  let _mutationTimer = null;
+  const MUTATION_DEBOUNCE_MS = 3000; // wait 3s after last mutation
+  const CHANGE_THRESHOLD = 0.15;     // 15% content change triggers re-index
+
+  function startObserver() {
+    // Capture initial content fingerprint
+    _lastExtractedText = extractPageText();
+
+    const observer = new MutationObserver(() => {
+      // Debounce: reset timer on each batch of mutations
+      if (_mutationTimer) clearTimeout(_mutationTimer);
+      _mutationTimer = setTimeout(() => {
+        checkForSignificantChange();
+      }, MUTATION_DEBOUNCE_MS);
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  }
+
+  function checkForSignificantChange() {
+    try {
+      const newText = extractPageText();
+      if (!_lastExtractedText || !newText) return;
+
+      // Quick length-based heuristic first
+      const lenDiff = Math.abs(newText.length - _lastExtractedText.length);
+      const avgLen = (_lastExtractedText.length + newText.length) / 2 || 1;
+
+      if (lenDiff / avgLen >= CHANGE_THRESHOLD) {
+        _lastExtractedText = newText;
+        notifyContentChanged();
+        return;
+      }
+
+      // Sample-based comparison: check a few slices for text changes
+      const sampleSize = 500;
+      const oldSample = _lastExtractedText.slice(0, sampleSize) + _lastExtractedText.slice(-sampleSize);
+      const newSample = newText.slice(0, sampleSize) + newText.slice(-sampleSize);
+
+      if (oldSample !== newSample) {
+        _lastExtractedText = newText;
+        notifyContentChanged();
+      }
+    } catch {
+      // Ignore extraction errors during observation
+    }
+  }
+
+  function notifyContentChanged() {
+    // Tell the background the page content has changed significantly
+    chrome.runtime.sendMessage({ type: "PAGE_CONTENT_CHANGED" }).catch(() => {});
+  }
+
+  // Start observing once the page is stable
+  if (document.readyState === "complete") {
+    startObserver();
+  } else {
+    window.addEventListener("load", startObserver, { once: true });
+  }
 
   // ── Source text highlighting ──────────────────────────────
 
