@@ -13,21 +13,25 @@ A Chrome extension that lets you **chat about any webpage** you're viewing. Ask 
 │        Chrome Extension          │
 │  ┌────────┐  ┌───────────────┐   │
 │  │ Popup  │  │Content Script │   │
-│  │  (UI)  │  │ (DOM scraper) │   │
-│  └───┬────┘  └──────┬────────┘   │
-│      │               │           │
+│  │  (UI)  │  │ (DOM + JSON-LD│   │
+│  └───┬────┘  │   scraper)    │   │
+│      │       └──────┬────────┘   │
 │  ┌───┴───────────────┴────────┐  │
 │  │   Background Service Worker │  │
 │  └────────────┬───────────────┘  │
 └───────────────┼──────────────────┘
-                │  HTTP (localhost)
+                │  HTTP / SSE (localhost)
 ┌───────────────┼──────────────────┐
 │  Python Backend (FastAPI)        │
 │  ┌────────────┴───────────────┐  │
 │  │    /session  →  build RAG  │  │
 │  │    /chat     →  query RAG  │  │
+│  │    /chat/stream → SSE RAG  │  │
 │  ├────────────────────────────┤  │
-│  │  LangChain + FAISS + GPT  │  │
+│  │  LangChain + FAISS         │  │
+│  │  OpenAI (primary)          │  │
+│  │  Ollama fallbacks:         │  │
+│  │    Gemma 2 9B / Qwen2.5 7B│  │
 │  └────────────────────────────┘  │
 └──────────────────────────────────┘
 ```
@@ -35,9 +39,9 @@ A Chrome extension that lets you **chat about any webpage** you're viewing. Ask 
 ### Data Flow
 
 1. **User opens popup** → Background worker asks the content script to extract page text.
-2. **Content script** strips noise (nav, footer, scripts, ads) and returns clean text.
-3. **Background worker** sends text to `POST /session` → backend splits it into chunks, embeds them into a FAISS vector index, and returns a session ID.
-4. **User asks a question** → `POST /chat` → backend retrieves the most relevant chunks, feeds them + chat history to GPT, returns the answer.
+2. **Content script** strips noise (nav, footer, scripts, ads), extracts `<script type="application/ld+json">` structured data (product info, reviews, etc.), detects page language, and returns the data.
+3. **Background worker** sends text + structured data + language to `POST /session` → backend splits it into chunks, embeds them into a FAISS vector index, and returns a session ID.
+4. **User asks a question** → `POST /chat/stream` → backend retrieves the most relevant chunks, feeds them + chat history to the LLM, and **streams tokens back** via Server-Sent Events.
 5. **Tab closed / URL changed** → `DELETE /session/:id` cleans up server memory.
 
 ---
@@ -49,6 +53,7 @@ A Chrome extension that lets you **chat about any webpage** you're viewing. Ask 
 - Python 3.12+
 - An [OpenAI API key](https://platform.openai.com/api-keys)
 - Google Chrome (or Chromium-based browser)
+- *(Optional)* [Ollama](https://ollama.com/) for local fallback models
 
 ### 1. Backend Setup
 
@@ -69,6 +74,10 @@ pip install -e ".[dev]"
 # Configure environment
 cp .env.example .env
 # Edit .env and add your OPENAI_API_KEY
+
+# (Optional) Pull Ollama fallback models
+ollama pull gemma2:9b
+ollama pull qwen2.5:7b
 
 # Start the backend server
 python main.py
@@ -91,7 +100,7 @@ curl http://127.0.0.1:8765/health
 
 1. Navigate to any webpage
 2. Click the extension icon → it indexes the page automatically
-3. Type a question (or use the 🎤 voice button) → get an answer
+3. Type a question → get a streamed answer
 
 ---
 
@@ -103,9 +112,9 @@ chrome_ext_chatbot/
 │   ├── __init__.py
 │   ├── config.py           # Settings from environment variables
 │   ├── models.py           # Pydantic request/response schemas
-│   ├── chain.py            # LangChain vectorstore + retrieval chain
+│   ├── chain.py            # LangChain vectorstore + retrieval chain + LLM fallbacks
 │   ├── session_manager.py  # Per-tab session lifecycle (TTL, eviction)
-│   └── server.py           # FastAPI app with /session, /chat, /health
+│   └── server.py           # FastAPI app with /session, /chat, /chat/stream, /health
 ├── extension/
 │   ├── manifest.json       # Chrome MV3 manifest
 │   ├── background.js       # Service worker (API bridge)
@@ -114,9 +123,10 @@ chrome_ext_chatbot/
 │   └── popup/
 │       ├── popup.html      # Chat UI shell
 │       ├── popup.css       # Dark-themed styles
-│       └── popup.js        # Chat logic + voice input
+│       └── popup.js        # Chat logic + streaming UI
 ├── tests/
 │   ├── test_config.py
+│   ├── test_chain.py
 │   ├── test_session_manager.py
 │   └── test_server.py
 ├── main.py                 # Entry point (uvicorn launcher)
@@ -132,12 +142,15 @@ chrome_ext_chatbot/
 | Variable | Default | Description |
 |---|---|---|
 | `OPENAI_API_KEY` | *(required)* | Your OpenAI API key |
-| `CHAT_MODEL` | `gpt-4o-mini` | LLM model name |
+| `CHAT_MODEL` | `gpt-4o-mini` | Primary LLM model name |
 | `CHUNK_SIZE` | `1000` | Text chunk size (chars) for splitting |
 | `CHUNK_OVERLAP` | `200` | Overlap between chunks |
 | `HOST` | `127.0.0.1` | Server bind address |
 | `PORT` | `8765` | Server port |
 | `CORS_ORIGINS` | `chrome-extension://*` | Allowed CORS origins |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL for fallback models |
+| `FALLBACK_MODEL` | `gemma2:9b` | Ollama fallback model (English/general) |
+| `MULTILINGUAL_MODEL` | `qwen2.5:7b` | Ollama fallback model (non-English pages) |
 
 ---
 
@@ -148,6 +161,7 @@ chrome_ext_chatbot/
 | `GET` | `/health` | Health check |
 | `POST` | `/session` | Index page content → returns `session_id` |
 | `POST` | `/chat` | Ask a question → returns AI answer |
+| `POST` | `/chat/stream` | Ask a question → streams tokens via SSE |
 | `DELETE` | `/session/{id}` | Delete a session |
 | `GET` | `/docs` | Interactive Swagger docs |
 
@@ -177,8 +191,10 @@ Bot:  "Yes — the page states it supports simultaneous multi-point
        connection to two Bluetooth devices."
 
 User: "Compare it with the XM4"
-Bot:  "The page doesn't contain comparison data with the XM4.
-       I can only answer based on what's on this page."
+Bot:  "The page doesn't include a comparison with the XM4.
+       From my general knowledge: the XM5 has improved noise
+       cancellation and a lighter design, while the XM4 is
+       often available at a lower price point."
 ```
 
 ### Wikipedia Article
@@ -192,30 +208,56 @@ Bot:  "• The article covers the history of the Roman Empire from 27 BC...
 ### Edge Case: Missing Information
 ```
 User: "What's the shipping cost?"
-Bot:  "I don't see shipping cost information on this page. The page
-       primarily contains product description and specifications."
+Bot:  "The page doesn't mention shipping cost. It primarily contains
+       product description and specifications. From my general knowledge:
+       Amazon shipping costs vary by seller and Prime membership status."
 ```
 
 ---
 
-## Voice Input
+## Structured Data Extraction
 
-The extension uses the **Web Speech API** (`SpeechRecognition`) built into Chrome:
+The content script automatically parses `<script type="application/ld+json">` blocks found on e-commerce sites (Amazon, Google Shopping, Shopify, etc.). This provides clean, structured product data (price, brand, ratings, availability) without fighting the DOM.
 
-- Click the 🎤 microphone button to start listening
-- Speak your question naturally
-- The transcript is auto-sent when speech ends
-- Red pulse animation indicates active recording
+- Handles single objects, arrays, and `@graph` containers
+- Flattened into readable text and prepended to page content before indexing
+- The retriever can then surface precise product details even when the DOM text is noisy
 
-**Browser compatibility:** Chrome 33+, Edge 79+. Firefox/Safari have limited support. The button hides itself on unsupported browsers.
+---
 
-**Privacy:** Audio is processed by Chrome's speech service (Google servers). No audio is sent to the Python backend — only the text transcript.
+## LLM Fallback Strategy
+
+The backend uses a **waterfall fallback** pattern so the extension never breaks if OpenAI is unavailable:
+
+| Priority | English Pages | Non-English Pages |
+|---|---|---|
+| 1 (primary) | OpenAI (gpt-4o-mini) | OpenAI (gpt-4o-mini) |
+| 2 (fallback) | Gemma 2 9B (via Ollama) | Qwen2.5 7B (via Ollama) |
+| 3 (fallback) | Qwen2.5 7B (via Ollama) | Gemma 2 9B (via Ollama) |
+
+- If the primary model fails (expired key, rate limit, network), the chain automatically tries the next model
+- Non-English pages prioritize **Qwen2.5 7B** which excels at multilingual comprehension
+- Page language is detected from `document.documentElement.lang`
+- Requires Ollama running locally with models pulled (`ollama pull gemma2:9b && ollama pull qwen2.5:7b`)
+
+---
+
+## Streaming
+
+## Streaming
+
+Chat responses are **streamed token-by-token** via Server-Sent Events (SSE):
+
+- Backend endpoint `POST /chat/stream` yields `data: {"token": "..."}` events
+- The popup renders tokens incrementally as they arrive — no waiting for the full response
+- A final `data: {"done": true, "sources": [...]}` event signals completion
+- The background worker uses a Chrome port (`chrome.runtime.connect`) to relay tokens to the popup
 
 ---
 
 ## Multi-Turn Conversation
 
-The backend uses `ConversationBufferWindowMemory` (last 10 turns) so follow-up questions work naturally:
+The backend uses conversation memory (last 10 turns) so follow-up questions work naturally:
 
 ```
 User: "What processor does this laptop use?"
