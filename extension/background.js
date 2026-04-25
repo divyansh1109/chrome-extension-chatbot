@@ -4,7 +4,7 @@
  * Sessions are persisted in chrome.storage.session to survive SW restarts.
  */
 
-const API_BASE = "https://your-app.railway.app"; // ← replace with your deployed Railway URL
+const API_BASE = "https://chrome-extension-chatbot-production.up.railway.app";
 
 // ── Session storage helpers (survive SW idle restarts) ────────
 
