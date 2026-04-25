@@ -93,6 +93,17 @@ class SessionManager:
             session.touch()
         return session
 
+    def get_sessions(self, session_ids: list[str]) -> list[Session]:
+        """Return all matching sessions (skipping unknown IDs)."""
+        result = []
+        with self._lock:
+            for sid in session_ids:
+                s = self._sessions.get(sid)
+                if s:
+                    s.touch()
+                    result.append(s)
+        return result
+
     def delete_session(self, session_id: str) -> None:
         with self._lock:
             self._sessions.pop(session_id, None)

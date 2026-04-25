@@ -12,9 +12,16 @@
       <div id="header">
         <h1>🤖 Page Chat</h1>
         <div id="header-actions">
+          <button id="btn-multi" title="Ask across multiple tabs">⊞</button>
           <button id="btn-reset" title="Re-index page">⟳</button>
           <button id="btn-close" title="Close panel">✕</button>
         </div>
+      </div>
+
+      <!-- Multi-tab selector (hidden by default) -->
+      <div id="multi-tab-bar" class="hidden">
+        <div id="multi-tab-list"></div>
+        <span id="multi-tab-label">Select tabs to include</span>
       </div>
 
       <!-- Status bar -->

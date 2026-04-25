@@ -28,6 +28,13 @@ class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=4000)
 
 
+class MultiTabChatRequest(BaseModel):
+    """Chat turn that queries across multiple open tabs."""
+
+    session_ids: list[str] = Field(..., min_length=1, description="Session IDs to query across")
+    question: str = Field(..., min_length=1, max_length=4000)
+
+
 class ChatResponse(BaseModel):
     """Response returned to the extension."""
 

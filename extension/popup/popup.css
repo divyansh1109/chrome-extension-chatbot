@@ -136,6 +136,29 @@ body {
   color: var(--text-secondary);
 }
 
+.source-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.source-item {
+  padding: 3px 6px;
+  margin-top: 3px;
+  border-radius: 4px;
+  background: rgba(124, 111, 247, 0.1);
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-item:hover {
+  background: rgba(124, 111, 247, 0.25);
+  color: var(--text-primary);
+}
+
 .typing-indicator {
   display: inline-flex;
   gap: 4px;
@@ -253,4 +276,64 @@ body {
 #chat-container::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 5px;
+}
+
+/* ── Multi-tab bar ─────────────────────────────────────────── */
+
+#multi-tab-bar {
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+#multi-tab-bar.hidden {
+  display: none;
+}
+
+#multi-tab-label {
+  color: var(--text-secondary);
+  display: block;
+  margin-bottom: 4px;
+}
+
+#multi-tab-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tab-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tab-chip:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.tab-chip input[type="checkbox"] {
+  width: 12px;
+  height: 12px;
+  accent-color: var(--accent);
+}
+
+.no-tabs {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+#btn-multi.active {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border-radius: 4px;
 }

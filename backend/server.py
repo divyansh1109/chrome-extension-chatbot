@@ -14,7 +14,7 @@ from slowapi.util import get_remote_address
 from starlette.responses import JSONResponse, StreamingResponse
 
 from backend.config import Settings
-from backend.models import ChatRequest, ChatResponse, PageContent, SessionInfo
+from backend.models import ChatRequest, ChatResponse, MultiTabChatRequest, PageContent, SessionInfo
 from backend.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,97 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Clean up a session when a tab is closed."""
         manager.delete_session(session_id)
         return {"status": "deleted"}
+
+    @app.post("/chat/multi")
+    @rate_limiter.limit("10/minute")
+    async def chat_multi(request: Request, req: MultiTabChatRequest):
+        """Stream an answer that draws context from multiple tab sessions."""
+        sessions = manager.get_sessions(req.session_ids)
+        if not sessions:
+            raise HTTPException(
+                status_code=404,
+                detail="No valid sessions found for the given IDs.",
+            )
+
+        import asyncio
+
+        _STREAM_END = object()
+
+        def _next_token(gen):
+            try:
+                return next(gen)
+            except StopIteration as e:
+                return _STREAM_END, e.value
+
+        def _multi_stream():
+            # Retrieve from all sessions' vectorstores
+            all_docs = []
+            tab_labels = {}
+            for s in sessions:
+                docs = s.chat_session.retriever.invoke(req.question)
+                for doc in docs:
+                    doc.metadata["_tab_title"] = s.title
+                    doc.metadata["_tab_url"] = s.url
+                all_docs.extend(docs)
+                tab_labels[s.session_id] = s.title
+
+            # Score and take top-k across all tabs
+            all_docs.sort(key=lambda d: len(d.page_content), reverse=True)
+            top_docs = all_docs[:6]
+
+            # Build combined context with tab attribution
+            context_parts = []
+            sources = []
+            for doc in top_docs:
+                tab_title = doc.metadata.get("_tab_title", "Unknown")
+                snippet = doc.page_content[:200]
+                context_parts.append(f"[From: {tab_title}]\n{doc.page_content}")
+                sources.append({"text": snippet, "tab": tab_title})
+
+            context = "\n\n".join(context_parts)
+
+            # Use the first session's LLM and prompt to generate
+            primary = sessions[0].chat_session
+            from langchain_core.messages import HumanMessage as HM
+            formatted = primary.prompt.invoke({
+                "context": context,
+                "chat_history": [],
+                "question": req.question,
+            })
+            chunks = []
+            for token in primary.llm.stream(formatted.to_messages()):
+                text = token.content if hasattr(token, "content") else str(token)
+                chunks.append(text)
+                yield text
+
+            return {"source_documents": sources}
+
+        async def event_generator():
+            loop = asyncio.get_event_loop()
+            gen = await loop.run_in_executor(None, _multi_stream)
+            sources = []
+            try:
+                while True:
+                    result = await loop.run_in_executor(None, _next_token, gen)
+                    if isinstance(result, tuple) and result[0] is _STREAM_END:
+                        meta = result[1] or {}
+                        sources = meta.get("source_documents", [])
+                        break
+                    yield f"data: {json.dumps({'token': result})}\n\n"
+            except Exception:
+                logger.exception("Multi-tab streaming failed")
+                yield f"data: {json.dumps({'error': 'Stream failed'})}\n\n"
+                return
+            yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     return app
 

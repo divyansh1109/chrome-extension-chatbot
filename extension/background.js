@@ -34,6 +34,28 @@ async function removeTabSession(tabId) {
   await saveSessions(sessions);
 }
 
+// ── Chat history storage (survive panel close/reopen) ────────
+
+async function loadChatHistory(tabId) {
+  const data = await chrome.storage.session.get("chatHistory");
+  const all = data.chatHistory || {};
+  return all[tabId] || [];
+}
+
+async function saveChatHistory(tabId, messages) {
+  const data = await chrome.storage.session.get("chatHistory");
+  const all = data.chatHistory || {};
+  all[tabId] = messages;
+  await chrome.storage.session.set({ chatHistory: all });
+}
+
+async function clearChatHistory(tabId) {
+  const data = await chrome.storage.session.get("chatHistory");
+  const all = data.chatHistory || {};
+  delete all[tabId];
+  await chrome.storage.session.set({ chatHistory: all });
+}
+
 // ── Helper: call backend API ─────────────────────────────────
 
 async function apiRequest(path, options = {}) {
@@ -178,6 +200,57 @@ async function chatStream(tabId, question, port) {
   }
 }
 
+// ── Multi-tab streaming via SSE ──────────────────────────────
+
+async function chatMultiStream(sessionIds, question, port) {
+  let resp;
+  try {
+    resp = await fetch(`${API_BASE}/chat/multi`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_ids: sessionIds, question }),
+    });
+  } catch (err) {
+    port.postMessage({ error: err.message });
+    return;
+  }
+
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    port.postMessage({ error: body.detail || `API error ${resp.status}` });
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = JSON.parse(line.slice(6));
+        if (payload.token !== undefined) {
+          port.postMessage({ token: payload.token });
+        } else if (payload.done) {
+          port.postMessage({ done: true, sources: payload.sources || [] });
+        } else if (payload.error) {
+          port.postMessage({ error: payload.error });
+        }
+      }
+    }
+  } catch (err) {
+    port.postMessage({ error: err.message });
+  }
+}
+
 // ── Extension icon click → toggle side panel ─────────────────
 
 chrome.action.onClicked.addListener(async (tab) => {
@@ -204,6 +277,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     );
     await removeTabSession(tabId);
   }
+  await clearChatHistory(tabId);
 });
 
 // Re-init session on navigation to a different URL
@@ -215,6 +289,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         method: "DELETE",
       }).catch(() => {});
       await removeTabSession(tabId);
+      await clearChatHistory(tabId);
     }
   }
 });
@@ -242,15 +317,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case "INIT_SESSION": {
           const existing = await getTabSession(tabId);
           if (existing) {
-            return { success: true, session: existing };
+            const history = await loadChatHistory(tabId);
+            return { success: true, session: existing, history };
           }
           const session = await initSession(tabId);
-          return { success: true, session };
+          return { success: true, session, history: [] };
         }
 
         case "CHAT": {
           const result = await chat(tabId, message.question);
           return { success: true, ...result };
+        }
+
+        case "SAVE_CHAT_HISTORY": {
+          await saveChatHistory(tabId, message.messages);
+          return { success: true };
+        }
+
+        case "LOAD_CHAT_HISTORY": {
+          const history = await loadChatHistory(tabId);
+          return { success: true, history };
         }
 
         case "RESET_SESSION": {
@@ -262,6 +348,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             ).catch(() => {});
             await removeTabSession(tabId);
           }
+          await clearChatHistory(tabId);
           const session = await initSession(tabId);
           return { success: true, session };
         }
@@ -270,6 +357,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // Forward close message to the content script in the tab
           await chrome.tabs.sendMessage(tabId, { type: "CLOSE_PANEL" });
           return { success: true };
+        }
+
+        case "HIGHLIGHT_SOURCE": {
+          await chrome.tabs.sendMessage(tabId, {
+            type: "HIGHLIGHT_SOURCE",
+            text: message.text,
+          });
+          return { success: true };
+        }
+
+        case "CLEAR_HIGHLIGHTS": {
+          await chrome.tabs.sendMessage(tabId, { type: "CLEAR_HIGHLIGHTS" });
+          return { success: true };
+        }
+
+        case "LIST_TAB_SESSIONS": {
+          // Return all active tab sessions for multi-tab UI
+          const allSessions = await loadSessions();
+          const entries = [];
+          for (const [tid, sess] of Object.entries(allSessions)) {
+            entries.push({
+              tabId: Number(tid),
+              sessionId: sess.sessionId,
+              title: sess.title,
+              url: sess.url,
+            });
+          }
+          return { success: true, sessions: entries };
         }
 
         default:
@@ -308,6 +423,10 @@ chrome.runtime.onConnect.addListener((port) => {
 
     if (message.type === "CHAT_STREAM") {
       await chatStream(tabId, message.question, port);
+    }
+
+    if (message.type === "CHAT_MULTI_STREAM") {
+      await chatMultiStream(message.sessionIds, message.question, port);
     }
   });
 });

@@ -11,12 +11,18 @@ const inputEl = document.getElementById("user-input");
 const btnSend = document.getElementById("btn-send");
 const btnReset = document.getElementById("btn-reset");
 const btnClose = document.getElementById("btn-close");
+const btnMulti = document.getElementById("btn-multi");
+const multiTabBar = document.getElementById("multi-tab-bar");
+const multiTabList = document.getElementById("multi-tab-list");
 const statusText = document.getElementById("status-text");
 const statusBar = document.getElementById("status-bar");
 
 // ── State ────────────────────────────────────────────────────
 
 let isProcessing = false;
+let chatMessages = []; // { role: "user"|"bot", text: string, sources?: string[] }
+let multiTabMode = false;
+let selectedSessionIds = [];
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -55,7 +61,25 @@ function addMessage(text, role, extra = {}) {
   if (extra.sources && extra.sources.length) {
     const srcDiv = document.createElement("div");
     srcDiv.className = "sources";
-    srcDiv.textContent = `📄 Based on ${extra.sources.length} page section(s)`;
+    const label = document.createElement("span");
+    label.textContent = `📄 Based on ${extra.sources.length} page section(s):`;
+    srcDiv.appendChild(label);
+
+    const srcList = document.createElement("ul");
+    srcList.className = "source-list";
+    for (const src of extra.sources) {
+      const li = document.createElement("li");
+      li.className = "source-item";
+      const srcText = typeof src === "string" ? src : src.text || "";
+      const tabLabel = typeof src === "object" && src.tab ? ` [${src.tab}]` : "";
+      li.textContent = srcText.slice(0, 100) + (srcText.length > 100 ? "…" : "") + tabLabel;
+      li.title = "Click to highlight on page";
+      li.addEventListener("click", () => {
+        sendToBg({ type: "HIGHLIGHT_SOURCE", text: srcText });
+      });
+      srcList.appendChild(li);
+    }
+    srcDiv.appendChild(srcList);
     div.appendChild(srcDiv);
   }
 
@@ -86,6 +110,18 @@ function sendToBg(message) {
   });
 }
 
+// ── Chat history persistence ─────────────────────────────────
+
+function persistHistory() {
+  sendToBg({ type: "SAVE_CHAT_HISTORY", messages: chatMessages });
+}
+
+function restoreHistory(history) {
+  for (const msg of history) {
+    addMessage(msg.text, msg.role, { sources: msg.sources });
+  }
+}
+
 // ── Session initialization ───────────────────────────────────
 
 async function initSession() {
@@ -101,10 +137,17 @@ async function initSession() {
       "ready"
     );
     setInputEnabled(true);
-    addMessage(
-      `Hi! I've read this page. Ask me anything about **"${s.title}"**.`,
-      "bot"
-    );
+
+    // Restore previous chat or show welcome message
+    if (resp.history && resp.history.length > 0) {
+      chatMessages = resp.history;
+      restoreHistory(chatMessages);
+    } else {
+      const welcome = `Hi! I've read this page. Ask me anything about **"${s.title}"**.`;
+      addMessage(welcome, "bot");
+      chatMessages.push({ role: "bot", text: welcome });
+      persistHistory();
+    }
     inputEl.focus();
   } else {
     const errMsg = resp?.error || "Could not connect to the backend server.";
@@ -126,6 +169,8 @@ async function sendMessage() {
   isProcessing = true;
   setInputEnabled(false);
   addMessage(question, "user");
+  chatMessages.push({ role: "user", text: question });
+  persistHistory();
   inputEl.value = "";
   autoResizeInput();
 
@@ -141,11 +186,10 @@ async function sendMessage() {
     if (msg.error) {
       hideTyping();
       if (botDiv) botDiv.remove();
-      addMessage(
-        `⚠️ ${msg.error}`,
-        "bot",
-        { isError: true }
-      );
+      const errText = `⚠️ ${msg.error}`;
+      addMessage(errText, "bot", { isError: true });
+      chatMessages.push({ role: "bot", text: errText });
+      persistHistory();
       finishStream();
       port.disconnect();
       return;
@@ -174,18 +218,43 @@ async function sendMessage() {
         botDiv = addMessage("", "bot");
       }
       // Append source info
-      if (msg.sources && msg.sources.length) {
+      const sources = msg.sources || [];
+      if (sources.length) {
         const srcDiv = document.createElement("div");
         srcDiv.className = "sources";
-        srcDiv.textContent = `📄 Based on ${msg.sources.length} page section(s)`;
+        const label = document.createElement("span");
+        label.textContent = `📄 Based on ${sources.length} page section(s):`;
+        srcDiv.appendChild(label);
+
+        const srcList = document.createElement("ul");
+        srcList.className = "source-list";
+        for (const src of sources) {
+          const li = document.createElement("li");
+          li.className = "source-item";
+          const srcText = typeof src === "string" ? src : src.text || "";
+          const tabLabel = typeof src === "object" && src.tab ? ` [${src.tab}]` : "";
+          li.textContent = srcText.slice(0, 100) + (srcText.length > 100 ? "…" : "") + tabLabel;
+          li.title = "Click to highlight on page";
+          li.addEventListener("click", () => {
+            sendToBg({ type: "HIGHLIGHT_SOURCE", text: srcText });
+          });
+          srcList.appendChild(li);
+        }
+        srcDiv.appendChild(srcList);
         botDiv.appendChild(srcDiv);
       }
+      chatMessages.push({ role: "bot", text: fullText, sources });
+      persistHistory();
       finishStream();
       port.disconnect();
     }
   });
 
-  port.postMessage({ type: "CHAT_STREAM", question });
+  if (multiTabMode && selectedSessionIds.length > 0) {
+    port.postMessage({ type: "CHAT_MULTI_STREAM", sessionIds: selectedSessionIds, question });
+  } else {
+    port.postMessage({ type: "CHAT_STREAM", question });
+  }
 
   function finishStream() {
     isProcessing = false;
@@ -216,6 +285,7 @@ inputEl.addEventListener("input", autoResizeInput);
 
 btnReset.addEventListener("click", async () => {
   messagesEl.innerHTML = "";
+  chatMessages = [];
   setStatus("Re-indexing page…");
   setInputEnabled(false);
 
@@ -228,10 +298,10 @@ btnReset.addEventListener("click", async () => {
       "ready"
     );
     setInputEnabled(true);
-    addMessage(
-      `Page re-indexed! Ask me anything about **"${s.title}"**.`,
-      "bot"
-    );
+    const welcome = `Page re-indexed! Ask me anything about **"${s.title}"**.`;
+    addMessage(welcome, "bot");
+    chatMessages.push({ role: "bot", text: welcome });
+    persistHistory();
   } else {
     setStatus(resp?.error || "Failed to reset session.", "error");
   }
@@ -240,6 +310,51 @@ btnReset.addEventListener("click", async () => {
 btnClose.addEventListener("click", () => {
   // Tell the background to forward CLOSE_PANEL to the content script
   chrome.runtime.sendMessage({ type: "CLOSE_PANEL" });
+});
+
+// ── Multi-tab mode ───────────────────────────────────────────
+
+btnMulti.addEventListener("click", async () => {
+  multiTabMode = !multiTabMode;
+  btnMulti.classList.toggle("active", multiTabMode);
+  multiTabBar.classList.toggle("hidden", !multiTabMode);
+
+  if (multiTabMode) {
+    // Load available tab sessions
+    const resp = await sendToBg({ type: "LIST_TAB_SESSIONS" });
+    multiTabList.innerHTML = "";
+    selectedSessionIds = [];
+
+    if (resp && resp.success && resp.sessions.length > 0) {
+      for (const s of resp.sessions) {
+        const chip = document.createElement("label");
+        chip.className = "tab-chip";
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = s.sessionId;
+        cb.addEventListener("change", () => {
+          if (cb.checked) {
+            selectedSessionIds.push(s.sessionId);
+          } else {
+            selectedSessionIds = selectedSessionIds.filter((id) => id !== s.sessionId);
+          }
+        });
+
+        const text = document.createElement("span");
+        text.textContent = s.title.slice(0, 30) + (s.title.length > 30 ? "…" : "");
+        text.title = s.url;
+
+        chip.appendChild(cb);
+        chip.appendChild(text);
+        multiTabList.appendChild(chip);
+      }
+    } else {
+      multiTabList.innerHTML = '<span class="no-tabs">No other tabs indexed yet</span>';
+    }
+  } else {
+    selectedSessionIds = [];
+  }
 });
 
 // ── Init ─────────────────────────────────────────────────────

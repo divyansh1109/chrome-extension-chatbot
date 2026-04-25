@@ -171,5 +171,101 @@
       sendResponse({ success: true });
       return true;
     }
+
+    if (message.type === "HIGHLIGHT_SOURCE") {
+      clearHighlights();
+      const found = highlightText(message.text);
+      sendResponse({ success: found });
+      return true;
+    }
+
+    if (message.type === "CLEAR_HIGHLIGHTS") {
+      clearHighlights();
+      sendResponse({ success: true });
+      return true;
+    }
   });
+
+  // ── Source text highlighting ──────────────────────────────
+
+  const HIGHLIGHT_CLASS = "__chatbot-highlight__";
+
+  function clearHighlights() {
+    document.querySelectorAll(`.${HIGHLIGHT_CLASS}`).forEach((el) => {
+      const parent = el.parentNode;
+      parent.replaceChild(document.createTextNode(el.textContent), el);
+      parent.normalize();
+    });
+  }
+
+  function highlightText(snippet) {
+    // Normalize the snippet: collapse whitespace to match how innerText works
+    const needle = snippet.replace(/\s+/g, " ").trim().slice(0, 120);
+    if (!needle) return false;
+
+    const treeWalker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          // Skip our panel and script/style elements
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          if (parent.closest(`#${PANEL_ID}`)) return NodeFilter.FILTER_REJECT;
+          if (parent.closest("script, style, noscript")) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      }
+    );
+
+    // Build a map of text nodes to search across node boundaries
+    const nodes = [];
+    let fullText = "";
+    while (treeWalker.nextNode()) {
+      const node = treeWalker.currentNode;
+      nodes.push({ node, start: fullText.length });
+      fullText += node.textContent;
+    }
+
+    // Search in normalized text
+    const normalizedFull = fullText.replace(/\s+/g, " ");
+    const idx = normalizedFull.toLowerCase().indexOf(needle.toLowerCase());
+    if (idx === -1) return false;
+
+    // Map back to original position (approximate — normalized offsets)
+    // Find which text nodes contain the match
+    const matchEnd = idx + needle.length;
+    let highlighted = false;
+
+    for (let i = 0; i < nodes.length; i++) {
+      const { node, start } = nodes[i];
+      const nodeEnd = start + node.textContent.length;
+
+      if (nodeEnd <= idx || start >= matchEnd) continue;
+
+      // This node overlaps the match
+      const highlightStart = Math.max(0, idx - start);
+      const highlightEnd = Math.min(node.textContent.length, matchEnd - start);
+
+      const range = document.createRange();
+      range.setStart(node, highlightStart);
+      range.setEnd(node, highlightEnd);
+
+      const mark = document.createElement("mark");
+      mark.className = HIGHLIGHT_CLASS;
+      mark.style.cssText = "background: #facc15; color: #000; padding: 1px 2px; border-radius: 2px; scroll-margin: 80px;";
+      range.surroundContents(mark);
+
+      if (!highlighted) {
+        mark.scrollIntoView({ behavior: "smooth", block: "center" });
+        highlighted = true;
+      }
+
+      // After surroundContents the treewalker is invalidated, but we only
+      // need the first continuous match, so break after highlighting.
+      break;
+    }
+
+    return highlighted;
+  }
 })();
