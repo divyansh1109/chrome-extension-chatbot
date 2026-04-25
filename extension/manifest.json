@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Webpage Chatbot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Chat about any webpage you're viewing. Ask questions about products, articles, and documentation using AI.",
 
   "permissions": [
