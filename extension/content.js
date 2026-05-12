@@ -69,7 +69,10 @@
 
     // Listen for messages from the iframe (backend-served page)
     window.addEventListener("message", (e) => {
-      if (e.data.type === "CLOSE_PANEL") closePanel();
+      if (e.data.type === "CLOSE_PANEL") {
+        closePanel();
+        chrome.runtime.sendMessage({ type: "PANEL_CLOSED" });
+      }
       if (e.data.type === "RESET_SESSION") {
         chrome.runtime.sendMessage({ type: "RESET_SESSION" }, (resp) => {
           if (resp && resp.success) {

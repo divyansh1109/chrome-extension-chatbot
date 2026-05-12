@@ -20,10 +20,29 @@ async function api(path, options = {}) {
   return resp.json();
 }
 
+// ── Track which tab has the panel open (single-instance) ─────
+
+let activePanelTabId = null;
+
 // ── Icon click → init session + toggle panel ─────────────────
 
 chrome.action.onClicked.addListener(async (tab) => {
   try {
+    // If panel is already open on another tab, focus that tab instead
+    if (activePanelTabId !== null && activePanelTabId !== tab.id) {
+      try {
+        const existingTab = await chrome.tabs.get(activePanelTabId);
+        if (existingTab) {
+          await chrome.tabs.update(activePanelTabId, { active: true });
+          await chrome.windows.update(existingTab.windowId, { focused: true });
+          return;
+        }
+      } catch {
+        // Tab no longer exists, clear the tracker
+        activePanelTabId = null;
+      }
+    }
+
     // Extract page content via content script
     let response;
     try {
@@ -57,6 +76,9 @@ chrome.action.onClicked.addListener(async (tab) => {
       sessionId: session.session_id,
     });
 
+    // Track which tab has the panel (toggle: open ↔ close)
+    activePanelTabId = activePanelTabId === tab.id ? null : tab.id;
+
     // Register all other open tabs (unindexed) so they appear in multi-tab selector
     const allTabs = await chrome.tabs.query({});
     for (const t of allTabs) {
@@ -76,6 +98,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 // ── Tab closed → cleanup ─────────────────────────────────────
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  if (tabId === activePanelTabId) activePanelTabId = null;
   api(`/tabs/${tabId}`, { method: "DELETE" }).catch(() => {});
   broadcastToAllPanels({ type: "TABS_CHANGED" });
 });
@@ -102,6 +125,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 // ── Handle messages from content script ──────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "PANEL_CLOSED" && sender.tab) {
+    if (sender.tab.id === activePanelTabId) activePanelTabId = null;
+    return false;
+  }
+
   if (message.type === "RESET_SESSION" && sender.tab) {
     (async () => {
       try {

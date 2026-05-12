@@ -161,8 +161,9 @@
       <span class="multi-tab-label">Select tabs to include</span>
       <div class="multi-tab-list">
         <template x-for="tab in tabs" :key="tab.tab_id">
-          <label class="tab-chip" :class="{ 'not-indexed': !tab.indexed, 'indexing': tab._indexing }">
-            <input type="checkbox" :value="tab.session_id || ''"
+          <label class="tab-chip" :class="{ 'not-indexed': !tab.indexed && !tab._indexing, 'indexing': tab._indexing }">
+            <input type="checkbox"
+                   :checked="selectedSessionIds.includes(tab.session_id)"
                    :disabled="tab._indexing"
                    @change="toggleTab(tab, $event.target.checked)">
             <span x-text="(tab.title || tab.url || 'Untitled').slice(0, 30)"></span>
@@ -397,7 +398,9 @@
             return;
           }
           // Unindexed tab — trigger on-demand indexing
-          tab._indexing = true;
+          // Replace the tab object in the array so Alpine detects the change
+          const idx = this.tabs.findIndex(t => t.tab_id === tab.tab_id);
+          if (idx !== -1) this.tabs[idx] = { ...tab, _indexing: true };
           window.parent.postMessage({ type: "INDEX_TAB", tabId: parseInt(tab.tab_id) }, "*");
         },
 
