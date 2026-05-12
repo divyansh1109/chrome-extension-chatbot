@@ -1,6 +1,7 @@
 """Integration tests for the FastAPI server endpoints."""
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,9 +29,14 @@ def settings():
 
 
 @pytest.fixture()
-def client(settings):
-    app = create_app(settings)
-    return TestClient(app)
+def client(settings, tmp_path):
+    # Use an isolated SQLite database for each test
+    db_file = str(tmp_path / "test.db")
+    with patch("backend.chat_store.DB_PATH", db_file), \
+         patch("backend.server.chat_store.DB_PATH", db_file):
+        app = create_app(settings)
+        with TestClient(app) as c:
+            yield c
 
 
 class TestHealthEndpoint:
@@ -222,3 +228,54 @@ class TestDeleteSession:
         resp = client.delete("/session/any-id")
         assert resp.status_code == 200
         assert resp.json()["status"] == "deleted"
+
+
+class TestChatUI:
+    def test_chat_ui_renders(self, client):
+        resp = client.get("/chat-ui")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "chatApp" in resp.text
+
+    def test_chat_ui_with_session_id(self, client):
+        resp = client.get("/chat-ui?session_id=test123")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+
+class TestTabsEndpoints:
+    def test_list_tabs_empty(self, client):
+        resp = client.get("/tabs")
+        assert resp.status_code == 200
+        assert resp.json()["tabs"] == []
+
+    def test_register_and_list_tab(self, client):
+        client.post(
+            "/tabs/42",
+            json={"session_id": "s1", "url": "https://x.com", "title": "X"},
+        )
+        resp = client.get("/tabs")
+        assert resp.status_code == 200
+        tabs = resp.json()["tabs"]
+        assert len(tabs) == 1
+        assert tabs[0]["session_id"] == "s1"
+
+    def test_unregister_tab(self, client):
+        client.post(
+            "/tabs/42",
+            json={"session_id": "s1", "url": "https://x.com", "title": "X"},
+        )
+        resp = client.delete("/tabs/42")
+        assert resp.status_code == 200
+        tabs = client.get("/tabs").json()["tabs"]
+        assert len(tabs) == 0
+
+
+class TestHistoryEndpoint:
+    def test_save_history(self, client):
+        resp = client.post(
+            "/history/sess1",
+            json={"messages": [{"role": "user", "text": "hi"}]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "saved"

@@ -1,14 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Webpage Chatbot",
-  "version": "1.1.0",
-  "description": "Chat about any webpage you're viewing. Ask questions about products, articles, and documentation using AI.",
+  "version": "2.0.0",
+  "description": "Chat about any webpage you're viewing using AI.",
 
   "permissions": [
     "activeTab",
     "tabs",
-    "scripting",
-    "storage"
+    "scripting"
   ],
 
   "host_permissions": [
@@ -33,13 +32,6 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_idle"
-    }
-  ],
-
-  "web_accessible_resources": [
-    {
-      "resources": ["popup/popup.html"],
-      "matches": ["<all_urls>"]
     }
   ],
 

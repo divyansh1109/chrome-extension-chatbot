@@ -12,3 +12,4 @@ wheels/
 # misc
 .env
 TECHNICAL_DOCS.md
+migration.md
