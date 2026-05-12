@@ -7,8 +7,8 @@
 
   const PANEL_ID = "__webpage-chatbot-panel__";
   const PANEL_WIDTH = 400;
-  // const API_BASE = "https://chrome-extension-chatbot-production.up.railway.app";
-  const API_BASE = "http://127.0.0.1:8765";
+  const API_BASE = "https://chrome-extension-chatbot-production.up.railway.app";
+  // const API_BASE = "http://127.0.0.1:8765";
 
   // ── Page text extraction ──────────────────────────────────
 
