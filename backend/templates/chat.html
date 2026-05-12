@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Webpage Chatbot</title>
+  <style>
+    /* ── Variables & Reset ─────────────────────────────── */
+    :root {
+      --bg-primary: #1e1e2e;
+      --bg-secondary: #2a2a3e;
+      --bg-input: #33334d;
+      --text-primary: #e0e0f0;
+      --text-secondary: #a0a0c0;
+      --accent: #7c6ff7;
+      --accent-hover: #9580ff;
+      --user-bubble: #3d3d5c;
+      --bot-bubble: #2a2a3e;
+      --border: #444466;
+      --error: #ff6b6b;
+      --success: #6bffb8;
+      --radius: 10px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 100%; height: 100vh; overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px; color: var(--text-primary); background: var(--bg-primary);
+    }
+    #app { display: flex; flex-direction: column; height: 100%; }
+
+    /* ── Header ─────────────────────────────────────────── */
+    #header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+    }
+    #header h1 { font-size: 15px; font-weight: 600; }
+    #header-actions button {
+      background: none; border: none; color: var(--text-secondary);
+      font-size: 18px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    }
+    #header-actions button:hover { background: var(--bg-input); color: var(--text-primary); }
+    .btn-close:hover { color: var(--error); }
+
+    /* ── Status ─────────────────────────────────────────── */
+    .status-bar {
+      padding: 6px 14px; font-size: 11px; color: var(--text-secondary);
+      background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+    }
+    .status-ready { color: var(--success); }
+    .status-error { color: var(--error); }
+
+    /* ── Messages ───────────────────────────────────────── */
+    #chat-container { flex: 1; overflow-y: auto; padding: 12px 14px; scroll-behavior: smooth; }
+    .message {
+      max-width: 88%; padding: 8px 12px; margin-bottom: 10px;
+      border-radius: var(--radius); line-height: 1.45; word-wrap: break-word;
+      animation: fadeIn 0.2s ease;
+    }
+    .message.user { background: var(--user-bubble); margin-left: auto; border-bottom-right-radius: 3px; }
+    .message.bot { background: var(--bot-bubble); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+    .message.error { border-color: var(--error); color: var(--error); }
+    .message .sources {
+      margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border);
+      font-size: 11px; color: var(--text-secondary);
+    }
+    .source-list { list-style: none; margin: 4px 0 0; padding: 0; }
+    .source-item {
+      padding: 3px 6px; margin-top: 3px; border-radius: 4px;
+      background: rgba(124, 111, 247, 0.1); white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* ── Typing indicator ───────────────────────────────── */
+    .typing-indicator {
+      display: inline-flex; gap: 4px; padding: 8px 12px;
+      background: var(--bot-bubble); border: 1px solid var(--border);
+      border-radius: var(--radius); margin-bottom: 10px;
+    }
+    .typing-indicator span {
+      width: 6px; height: 6px; background: var(--text-secondary);
+      border-radius: 50%; animation: bounce 1.2s infinite;
+    }
+    .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Input area ─────────────────────────────────────── */
+    #input-area {
+      display: flex; align-items: flex-end; gap: 6px;
+      padding: 10px 12px; background: var(--bg-secondary);
+      border-top: 1px solid var(--border);
+    }
+    #input-area textarea {
+      flex: 1; resize: none; border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 8px 10px; font-size: 13px;
+      font-family: inherit; color: var(--text-primary); background: var(--bg-input);
+      outline: none; max-height: 80px; overflow-y: auto;
+    }
+    #input-area textarea:focus { border-color: var(--accent); }
+    #input-area textarea:disabled { opacity: 0.5; }
+    .btn-send {
+      width: 34px; height: 34px; border: none; border-radius: 50%;
+      background: var(--accent); color: #fff; font-size: 15px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .btn-send:hover { background: var(--accent-hover); }
+    .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Scrollbar ──────────────────────────────────────── */
+    #chat-container::-webkit-scrollbar { width: 5px; }
+    #chat-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+
+    /* ── Multi-tab bar ──────────────────────────────────── */
+    .multi-tab-bar {
+      padding: 6px 12px; background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border); font-size: 11px;
+    }
+    .multi-tab-label { color: var(--text-secondary); display: block; margin-bottom: 4px; }
+    .multi-tab-list { display: flex; flex-wrap: wrap; gap: 4px; }
+    .tab-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 12px; font-size: 11px;
+      background: var(--bg-input); border: 1px solid var(--border); cursor: pointer;
+    }
+    .tab-chip input { margin: 0; }
+    .tab-chip.not-indexed { opacity: 0.5; font-style: italic; }
+
+    /* Hide Alpine.js x-cloak elements until ready */
+    [x-cloak] { display: none !important; }
+  </style>
+  <!-- Alpine.js — self-hosted to avoid CDN/CSP issues -->
+  <script defer src="/static/alpine.min.js"></script>
+</head>
+<body>
+
+  <div id="app" x-data="chatApp()" x-init="init()">
+    <!-- Header -->
+    <div id="header">
+      <h1>🤖 Page Chat</h1>
+      <div id="header-actions">
+        <button @click="multiTabOpen = !multiTabOpen; if (multiTabOpen) refreshTabs()"
+                title="Ask across multiple tabs">⊞</button>
+        <button @click="resetSession()" title="Re-index page">⟳</button>
+        <button class="btn-close" @click="closePanel()" title="Close panel">✕</button>
+      </div>
+    </div>
+
+    <!-- Multi-tab selector -->
+    <div class="multi-tab-bar" x-show="multiTabOpen" x-cloak>
+      <span class="multi-tab-label">Select tabs to include</span>
+      <div class="multi-tab-list">
+        <template x-for="tab in tabs" :key="tab.tab_id">
+          <label class="tab-chip" :class="{ 'not-indexed': !tab.indexed }">
+            <input type="checkbox" :value="tab.session_id || ''"
+                   :disabled="!tab.indexed"
+                   @change="toggleTab(tab, $event.target.checked)">
+            <span x-text="(tab.title || tab.url || 'Untitled').slice(0, 30)"></span>
+          </label>
+        </template>
+      </div>
+    </div>
+
+    <!-- Status bar -->
+    <div class="status-bar" :class="sessionId ? 'status-ready' : ''">
+      <span>
+        {% if session %}
+          Ready — {{ session.chunk_count }} sections indexed from "{{ session.title }}"
+        {% else %}
+          Initializing…
+        {% endif %}
+      </span>
+    </div>
+
+    <!-- Chat messages -->
+    <div id="chat-container" x-ref="chatContainer">
+      {# Server-rendered history from SQLite (initial load) #}
+      {% for msg in history %}
+        <div class="message {{ msg.role }}">{{ msg.text | e }}</div>
+      {% endfor %}
+      {% if not history and session %}
+        <div class="message bot">
+          Hi! I've read this page. Ask me anything about "<strong>{{ session.title }}</strong>".
+        </div>
+      {% endif %}
+
+      {# Alpine-rendered messages (new messages added during this session) #}
+      <template x-for="(msg, i) in messages" :key="i">
+        <div class="message" :class="[msg.role, msg.isError ? 'error' : '']">
+          <div x-html="renderMarkdown(msg.text)"></div>
+          <div class="sources" x-show="msg.sources && msg.sources.length">
+            <span x-text="'📄 Based on ' + (msg.sources?.length || 0) + ' page section(s)'"></span>
+            <ul class="source-list">
+              <template x-for="src in (msg.sources || [])" :key="src.text">
+                <li class="source-item"
+                    x-text="formatSource(src)"></li>
+              </template>
+            </ul>
+          </div>
+        </div>
+      </template>
+
+      {# Typing indicator #}
+      <div class="typing-indicator" x-show="typing" x-cloak>
+        <span></span><span></span><span></span>
+      </div>
+
+      {# Live streaming text #}
+      <div class="message bot" x-show="streamingText" x-cloak>
+        <div x-html="renderMarkdown(streamingText)"></div>
+      </div>
+    </div>
+
+    <!-- Input area -->
+    <div id="input-area">
+      <textarea placeholder="Ask about this page…" rows="1"
+        x-model="question"
+        :disabled="isProcessing || !sessionId"
+        @keydown.enter.prevent="if (!$event.shiftKey) sendMessage()"
+        @input="$el.style.height = 'auto'; $el.style.height = Math.min($el.scrollHeight, 80) + 'px'"
+        x-ref="input"></textarea>
+      <button class="btn-send" title="Send"
+        :disabled="isProcessing || !sessionId || !question.trim()"
+        @click="sendMessage()">➤</button>
+    </div>
+  </div>
+
+  <script>
+    function chatApp() {
+      return {
+        sessionId: "{{ session.session_id if session else '' }}",
+        messages: [],
+        question: "",
+        isProcessing: false,
+        typing: false,
+        streamingText: "",
+        multiTabOpen: false,
+        tabs: [],
+        selectedSessionIds: [],
+
+        init() {
+          if (this.sessionId) this.$refs.input?.focus();
+          this.scrollToBottom();
+
+          // Listen for messages from extension (content.js → iframe)
+          window.addEventListener("message", (e) => {
+            if (e.data.type === "TABS_CHANGED") this.refreshTabs();
+            if (e.data.type === "SESSION_READY") window.location.reload();
+          });
+        },
+
+        scrollToBottom() {
+          this.$nextTick(() => {
+            const el = this.$refs.chatContainer;
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        },
+
+        renderMarkdown(text) {
+          if (!text) return "";
+          return text
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+            .replace(/\n/g, "<br>");
+        },
+
+        formatSource(src) {
+          const txt = typeof src === "string" ? src : src.text || "";
+          const tab = typeof src === "object" && src.tab ? ` [${src.tab}]` : "";
+          return txt.slice(0, 100) + (txt.length > 100 ? "…" : "") + tab;
+        },
+
+        // ── SSE Streaming ────────────────────────────────
+        async sendMessage() {
+          const q = this.question.trim();
+          if (!q || this.isProcessing || !this.sessionId) return;
+
+          this.isProcessing = true;
+          this.messages.push({ role: "user", text: q });
+          this.question = "";
+          this.scrollToBottom();
+          this.typing = true;
+
+          try {
+            const body = this.selectedSessionIds.length > 0
+              ? { session_ids: this.selectedSessionIds, question: q }
+              : { session_id: this.sessionId, question: q };
+            const endpoint = this.selectedSessionIds.length > 0
+              ? "/chat/multi" : "/chat/stream";
+
+            const resp = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+
+            if (!resp.ok) {
+              const errBody = await resp.json().catch(() => ({}));
+              throw new Error(errBody.detail || `Error ${resp.status}`);
+            }
+
+            this.typing = false;
+            this.streamingText = "";
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            let fullText = "";
+            let sources = [];
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+
+              for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                const payload = JSON.parse(line.slice(6));
+                if (payload.token !== undefined) {
+                  fullText += payload.token;
+                  this.streamingText = fullText;
+                  this.scrollToBottom();
+                }
+                if (payload.done) {
+                  sources = payload.sources || [];
+                }
+                if (payload.error) {
+                  throw new Error(payload.error);
+                }
+              }
+            }
+
+            // Move from streaming to permanent message
+            this.streamingText = "";
+            this.messages.push({ role: "bot", text: fullText, sources });
+            this.scrollToBottom();
+
+            // Persist to server (fire-and-forget)
+            fetch(`/history/${this.sessionId}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ messages: [
+                { role: "user", text: q },
+                { role: "bot", text: fullText, sources },
+              ]}),
+            }).catch(() => {});
+
+          } catch (err) {
+            this.typing = false;
+            this.streamingText = "";
+            this.messages.push({ role: "bot", text: "⚠️ " + err.message, isError: true });
+            this.scrollToBottom();
+          }
+
+          this.isProcessing = false;
+          this.$refs.input?.focus();
+        },
+
+        // ── Multi-tab ─────────────────────────────────────
+        async refreshTabs() {
+          try {
+            const resp = await fetch("/tabs");
+            this.tabs = (await resp.json()).tabs || [];
+          } catch { this.tabs = []; }
+        },
+
+        toggleTab(tab, checked) {
+          if (checked && tab.session_id) {
+            this.selectedSessionIds.push(tab.session_id);
+          } else {
+            this.selectedSessionIds = this.selectedSessionIds.filter(id => id !== tab.session_id);
+          }
+        },
+
+        // ── Panel actions ─────────────────────────────────
+        resetSession() {
+          window.parent.postMessage({ type: "RESET_SESSION" }, "*");
+        },
+
+        closePanel() {
+          window.parent.postMessage({ type: "CLOSE_PANEL" }, "*");
+        },
+      };
+    }
+  </script>
+</body>
+</html>

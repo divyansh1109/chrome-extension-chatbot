@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.responses import JSONResponse, StreamingResponse
 
+from backend import chat_store
 from backend.config import Settings
 from backend.models import ChatRequest, ChatResponse, MultiTabChatRequest, PageContent, SessionInfo
 from backend.session_manager import SessionManager
@@ -56,6 +61,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     manager = SessionManager(settings)
 
+    # ── Jinja2 templates & static files ────────────────────────
+    templates_dir = Path(__file__).parent / "templates"
+    static_dir = Path(__file__).parent / "static"
+    templates = Jinja2Templates(directory=str(templates_dir))
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    # ── Startup: init SQLite + periodic cleanup ────────────────
+
+    @app.on_event("startup")
+    async def on_startup():
+        await chat_store.init_db()
+
+        async def _periodic_cleanup():
+            while True:
+                await asyncio.sleep(600)  # Every 10 minutes
+                try:
+                    await chat_store.cleanup_stale()
+                except Exception:
+                    logger.exception("Periodic cleanup failed")
+
+        asyncio.create_task(_periodic_cleanup())
+
     # ── Endpoints ──────────────────────────────────────────────
 
     @app.get("/health")
@@ -71,8 +98,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=400,
                 detail="Page content is empty; nothing to chat about.",
             )
-
-        import asyncio
 
         session_id = uuid.uuid4().hex[:12]
         loop = asyncio.get_event_loop()
@@ -132,8 +157,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Session not found. Please reload the page to start a new session.",
             )
 
-        import asyncio
-
         _STREAM_END = object()
 
         def _next_token(gen):
@@ -179,6 +202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def delete_session(session_id: str):
         """Clean up a session when a tab is closed."""
         manager.delete_session(session_id)
+        await chat_store.clear_history(session_id)
         return {"status": "deleted"}
 
     @app.post("/chat/multi")
@@ -191,8 +215,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=404,
                 detail="No valid sessions found for the given IDs.",
             )
-
-        import asyncio
 
         _STREAM_END = object()
 
@@ -272,13 +294,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+    # ── Chat UI (server-rendered) ──────────────────────────────
+
+    @app.get("/chat-ui")
+    async def chat_ui(request: Request, session_id: str = ""):
+        """Render the chat UI. Called by the extension iframe."""
+        session = manager.get_session(session_id) if session_id else None
+        history = []
+        if session_id:
+            history = await chat_store.get_history(session_id)
+
+        session_info = None
+        if session:
+            session_info = {
+                "session_id": session.session_id,
+                "title": session.title,
+                "chunk_count": session.chunk_count,
+            }
+
+        return templates.TemplateResponse(
+            request=request,
+            name="chat.html",
+            context={
+                "session": session_info,
+                "history": history,
+            },
+        )
+
+    # ── Chat history persistence ───────────────────────────────
+
+    @app.post("/history/{session_id}")
+    async def save_history(session_id: str, request: Request):
+        """Save chat messages from the UI."""
+        body = await request.json()
+        messages = body.get("messages", [])
+        if messages:
+            await chat_store.save_messages(session_id, messages)
+        return {"status": "saved"}
+
+    # ── Tab registry ───────────────────────────────────────────
+
+    @app.get("/tabs")
+    async def list_tabs():
+        """Return all registered tabs for the multi-tab selector."""
+        tabs = await chat_store.get_all_tabs()
+        return {"tabs": tabs}
+
+    @app.post("/tabs/{tab_id}")
+    async def register_tab_endpoint(tab_id: str, request: Request):
+        """Register a tab when it's indexed (called by background.js)."""
+        body = await request.json()
+        await chat_store.register_tab(
+            tab_id=tab_id,
+            session_id=body["session_id"],
+            url=body["url"],
+            title=body.get("title", ""),
+        )
+        return {"status": "registered"}
+
+    @app.delete("/tabs/{tab_id}")
+    async def unregister_tab_endpoint(tab_id: str):
+        """Remove a tab from the registry (called on tab close)."""
+        await chat_store.unregister_tab(tab_id)
+        return {"status": "removed"}
+
     return app
 
 
 async def _run_chain(session, question: str) -> dict:
     """Invoke the chat session; run in executor since LangChain may block."""
-    import asyncio
-
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
