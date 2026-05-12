@@ -77,6 +77,13 @@
           }
         });
       }
+      if (e.data.type === "INDEX_TAB") {
+        chrome.runtime.sendMessage({ type: "INDEX_TAB", tabId: e.data.tabId }, (resp) => {
+          if (iframe.contentWindow) {
+            iframe.contentWindow.postMessage({ type: "TAB_INDEXED", tabId: e.data.tabId, success: resp?.success }, "*");
+          }
+        });
+      }
     });
   }
 

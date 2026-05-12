@@ -133,6 +133,8 @@
     }
     .tab-chip input { margin: 0; }
     .tab-chip.not-indexed { opacity: 0.5; font-style: italic; }
+    .tab-chip.indexing { opacity: 0.7; }
+    .indexing-indicator { font-size: 0.75em; margin-left: 2px; }
 
     /* Hide Alpine.js x-cloak elements until ready */
     [x-cloak] { display: none !important; }
@@ -159,11 +161,12 @@
       <span class="multi-tab-label">Select tabs to include</span>
       <div class="multi-tab-list">
         <template x-for="tab in tabs" :key="tab.tab_id">
-          <label class="tab-chip" :class="{ 'not-indexed': !tab.indexed }">
+          <label class="tab-chip" :class="{ 'not-indexed': !tab.indexed, 'indexing': tab._indexing }">
             <input type="checkbox" :value="tab.session_id || ''"
-                   :disabled="!tab.indexed"
+                   :disabled="tab._indexing"
                    @change="toggleTab(tab, $event.target.checked)">
             <span x-text="(tab.title || tab.url || 'Untitled').slice(0, 30)"></span>
+            <span x-show="tab._indexing" class="indexing-indicator">⏳</span>
           </label>
         </template>
       </div>
@@ -253,6 +256,16 @@
           // Listen for messages from extension (content.js → iframe)
           window.addEventListener("message", (e) => {
             if (e.data.type === "TABS_CHANGED") this.refreshTabs();
+            if (e.data.type === "TAB_INDEXED") {
+              this.refreshTabs().then(() => {
+                const tab = this.tabs.find(t => t.tab_id === String(e.data.tabId));
+                if (tab && tab.indexed && tab.session_id) {
+                  if (!this.selectedSessionIds.includes(tab.session_id)) {
+                    this.selectedSessionIds.push(tab.session_id);
+                  }
+                }
+              });
+            }
             if (e.data.type === "SESSION_READY") window.location.reload();
           });
         },
@@ -375,11 +388,17 @@
         },
 
         toggleTab(tab, checked) {
-          if (checked && tab.session_id) {
-            this.selectedSessionIds.push(tab.session_id);
-          } else {
+          if (!checked) {
             this.selectedSessionIds = this.selectedSessionIds.filter(id => id !== tab.session_id);
+            return;
           }
+          if (tab.indexed && tab.session_id) {
+            this.selectedSessionIds.push(tab.session_id);
+            return;
+          }
+          // Unindexed tab — trigger on-demand indexing
+          tab._indexing = true;
+          window.parent.postMessage({ type: "INDEX_TAB", tabId: parseInt(tab.tab_id) }, "*");
         },
 
         // ── Panel actions ─────────────────────────────────

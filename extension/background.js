@@ -56,6 +56,18 @@ chrome.action.onClicked.addListener(async (tab) => {
       type: "TOGGLE_PANEL",
       sessionId: session.session_id,
     });
+
+    // Register all other open tabs (unindexed) so they appear in multi-tab selector
+    const allTabs = await chrome.tabs.query({});
+    for (const t of allTabs) {
+      if (t.id === tab.id) continue;
+      if (!t.url || t.url.startsWith("chrome://") || t.url.startsWith("chrome-extension://")) continue;
+      api(`/tabs/${t.id}`, {
+        method: "POST",
+        body: JSON.stringify({ url: t.url, title: t.title || t.url }),
+      }).catch(() => {});
+    }
+    broadcastToAllPanels({ type: "TABS_CHANGED" });
   } catch (err) {
     console.error("Failed to init:", err);
   }
@@ -65,15 +77,26 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   api(`/tabs/${tabId}`, { method: "DELETE" }).catch(() => {});
+  broadcastToAllPanels({ type: "TABS_CHANGED" });
 });
 
-// ── Tab navigated → notify panels ────────────────────────────
+// ── New tab created → register as unindexed ──────────────────
+
+chrome.tabs.onCreated.addListener(async (tab) => {
+  // New tabs may not have a URL yet; register once they do via onUpdated
+});
+
+// ── Tab navigated → register + notify panels ─────────────────
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete") return;
-  if (tab.url && !tab.url.startsWith("chrome://") && !tab.url.startsWith("chrome-extension://")) {
-    broadcastToAllPanels({ type: "TABS_CHANGED" });
-  }
+  if (!tab.url || tab.url.startsWith("chrome://") || tab.url.startsWith("chrome-extension://")) return;
+  // Register/update the tab on the server (unindexed if no session exists yet)
+  api(`/tabs/${tabId}`, {
+    method: "POST",
+    body: JSON.stringify({ url: tab.url, title: tab.title || tab.url }),
+  }).catch(() => {});
+  broadcastToAllPanels({ type: "TABS_CHANGED" });
 });
 
 // ── Handle messages from content script ──────────────────────
@@ -105,6 +128,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     })();
     return true; // keep channel open for async response
+  }
+
+  if (message.type === "INDEX_TAB") {
+    (async () => {
+      try {
+        const targetTabId = message.tabId;
+        let response;
+        try {
+          response = await chrome.tabs.sendMessage(targetTabId, { type: "EXTRACT_PAGE_CONTENT" });
+        } catch {
+          await chrome.scripting.executeScript({ target: { tabId: targetTabId }, files: ["content.js"] });
+          response = await chrome.tabs.sendMessage(targetTabId, { type: "EXTRACT_PAGE_CONTENT" });
+        }
+        if (!response || !response.success) throw new Error("Extract failed");
+
+        const session = await api("/session", {
+          method: "POST",
+          body: JSON.stringify(response.data),
+        });
+        await api(`/tabs/${targetTabId}`, {
+          method: "POST",
+          body: JSON.stringify({
+            session_id: session.session_id,
+            url: session.url,
+            title: session.title,
+          }),
+        });
+        broadcastToAllPanels({ type: "TABS_CHANGED" });
+        sendResponse({ success: true, sessionId: session.session_id });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
   }
 
   if (message.type === "PAGE_CONTENT_CHANGED" && sender.tab) {

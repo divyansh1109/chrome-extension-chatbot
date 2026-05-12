@@ -346,9 +346,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body = await request.json()
         await chat_store.register_tab(
             tab_id=tab_id,
-            session_id=body["session_id"],
+            session_id=body.get("session_id", ""),
             url=body["url"],
             title=body.get("title", ""),
+            indexed=bool(body.get("session_id")),
         )
         return {"status": "registered"}
 

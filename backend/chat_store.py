@@ -110,22 +110,24 @@ async def register_tab(
     session_id: str,
     url: str,
     title: str = "",
+    indexed: bool = True,
     db_path: str = DB_PATH,
 ) -> None:
     """Register or update a tab in the registry."""
     now = time.time()
+    idx = 1 if indexed else 0
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """INSERT INTO tab_registry (tab_id, session_id, url, title, indexed, last_active)
-               VALUES (?, ?, ?, ?, 1, ?)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(tab_id) DO UPDATE SET
-                 session_id = excluded.session_id,
+                 session_id = CASE WHEN excluded.session_id != '' THEN excluded.session_id ELSE tab_registry.session_id END,
                  url = excluded.url,
                  title = excluded.title,
-                 indexed = 1,
+                 indexed = CASE WHEN excluded.indexed = 1 THEN 1 ELSE tab_registry.indexed END,
                  last_active = excluded.last_active
             """,
-            (tab_id, session_id, url, title, now),
+            (tab_id, session_id, url, title, idx, now),
         )
         await db.commit()
 
