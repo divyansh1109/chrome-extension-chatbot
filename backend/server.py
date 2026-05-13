@@ -167,7 +167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return _STREAM_END, e.value
 
         async def event_generator():
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             gen = await loop.run_in_executor(
                 None,
                 lambda: session.chat_session.stream(req.question),
@@ -181,6 +181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         sources = meta.get("source_documents", [])
                         break
                     yield f"data: {json.dumps({'token': result})}\n\n"
+                    await asyncio.sleep(0)  # force yield to event loop for flushing
             except Exception:
                 logger.exception(
                     "Streaming failed for session %s", req.session_id
@@ -195,6 +196,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
             },
         )
 
@@ -289,7 +291,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"source_documents": sources}
 
         async def event_generator():
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             gen = await loop.run_in_executor(None, _multi_stream)
             sources = []
             try:
@@ -300,6 +302,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         sources = meta.get("source_documents", [])
                         break
                     yield f"data: {json.dumps({'token': result})}\n\n"
+                    await asyncio.sleep(0)  # force yield to event loop for flushing
             except Exception:
                 logger.exception("Multi-tab streaming failed")
                 yield f"data: {json.dumps({'error': 'Stream failed'})}\n\n"
@@ -312,6 +315,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
             },
         )
 
