@@ -149,56 +149,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/chat/stream")
     @rate_limiter.limit("20/minute")
     async def chat_stream(request: Request, req: ChatRequest):
-        """Stream tokens back as Server-Sent Events."""
-        session = manager.get_session(req.session_id)
-        if not session:
-            raise HTTPException(
-                status_code=404,
-                detail="Session not found. Please reload the page to start a new session.",
-            )
+        """Stream tokens back as Server-Sent Events (POST)."""
+        return _make_stream_response(manager, req.session_id, req.question)
 
-        _STREAM_END = object()
-
-        def _next_token(gen):
-            """Wrapper around next() that converts StopIteration to a sentinel."""
-            try:
-                return next(gen)
-            except StopIteration as e:
-                return _STREAM_END, e.value
-
-        async def event_generator():
-            loop = asyncio.get_running_loop()
-            gen = await loop.run_in_executor(
-                None,
-                lambda: session.chat_session.stream(req.question),
-            )
-            sources = []
-            try:
-                while True:
-                    result = await loop.run_in_executor(None, _next_token, gen)
-                    if isinstance(result, tuple) and result[0] is _STREAM_END:
-                        meta = result[1] or {}
-                        sources = meta.get("source_documents", [])
-                        break
-                    yield f"data: {json.dumps({'token': result})}\n\n"
-                    await asyncio.sleep(0)  # force yield to event loop for flushing
-            except Exception:
-                logger.exception(
-                    "Streaming failed for session %s", req.session_id
-                )
-                yield f"data: {json.dumps({'error': 'Stream failed'})}\n\n"
-                return
-            yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
-        )
+    @app.get("/chat/stream")
+    @rate_limiter.limit("20/minute")
+    async def chat_stream_get(request: Request, session_id: str, question: str):
+        """Stream tokens back as Server-Sent Events (GET for EventSource)."""
+        return _make_stream_response(manager, session_id, question)
 
     @app.delete("/session/{session_id}")
     async def delete_session(session_id: str):
@@ -210,114 +168,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/chat/multi")
     @rate_limiter.limit("10/minute")
     async def chat_multi(request: Request, req: MultiTabChatRequest):
-        """Stream an answer that draws context from multiple tab sessions."""
-        sessions = manager.get_sessions(req.session_ids)
-        if not sessions:
-            raise HTTPException(
-                status_code=404,
-                detail="No valid sessions found for the given IDs.",
-            )
+        """Stream an answer that draws context from multiple tab sessions (POST)."""
+        return _make_multi_stream_response(manager, req.session_ids, req.question)
 
-        _STREAM_END = object()
-
-        def _next_token(gen):
-            try:
-                return next(gen)
-            except StopIteration as e:
-                return _STREAM_END, e.value
-
-        def _multi_stream():
-            # Retrieve from all sessions' vectorstores
-            all_docs = []
-            docs_by_tab = {}
-            tab_labels = {}
-            for s in sessions:
-                docs = s.chat_session.retriever.invoke(req.question)
-                for doc in docs:
-                    doc.metadata["_tab_title"] = s.title
-                    doc.metadata["_tab_url"] = s.url
-                all_docs.extend(docs)
-                docs_by_tab[s.session_id] = docs
-                tab_labels[s.session_id] = s.title
-
-            # Ensure at least 1 doc per tab, then fill remaining slots
-            num_tabs = len(sessions)
-            per_tab_min = max(1, 8 // num_tabs)  # scale up total with more tabs
-            total_budget = max(8, num_tabs * 2)   # at least 2 per tab
-            top_docs = []
-            used = set()
-
-            # Round 1: take top per_tab_min docs from each tab
-            for sid, docs in docs_by_tab.items():
-                for doc in docs[:per_tab_min]:
-                    top_docs.append(doc)
-                    used.add(id(doc))
-
-            # Round 2: fill remaining budget from all docs (best variety)
-            remaining = total_budget - len(top_docs)
-            for doc in all_docs:
-                if remaining <= 0:
-                    break
-                if id(doc) not in used:
-                    top_docs.append(doc)
-                    used.add(id(doc))
-                    remaining -= 1
-
-            # Build combined context with tab attribution
-            context_parts = []
-            sources = []
-            for doc in top_docs:
-                tab_title = doc.metadata.get("_tab_title", "Unknown")
-                snippet = doc.page_content[:200]
-                context_parts.append(f"[From: {tab_title}]\n{doc.page_content}")
-                sources.append({"text": snippet, "tab": tab_title})
-
-            context = "\n\n".join(context_parts)
-
-            # Use the first session's LLM and prompt to generate
-            primary = sessions[0].chat_session
-            from langchain_core.messages import HumanMessage as HM
-            formatted = primary.prompt.invoke({
-                "context": context,
-                "chat_history": [],
-                "question": req.question,
-            })
-            chunks = []
-            for token in primary.llm.stream(formatted.to_messages()):
-                text = token.content if hasattr(token, "content") else str(token)
-                chunks.append(text)
-                yield text
-
-            return {"source_documents": sources}
-
-        async def event_generator():
-            loop = asyncio.get_running_loop()
-            gen = await loop.run_in_executor(None, _multi_stream)
-            sources = []
-            try:
-                while True:
-                    result = await loop.run_in_executor(None, _next_token, gen)
-                    if isinstance(result, tuple) and result[0] is _STREAM_END:
-                        meta = result[1] or {}
-                        sources = meta.get("source_documents", [])
-                        break
-                    yield f"data: {json.dumps({'token': result})}\n\n"
-                    await asyncio.sleep(0)  # force yield to event loop for flushing
-            except Exception:
-                logger.exception("Multi-tab streaming failed")
-                yield f"data: {json.dumps({'error': 'Stream failed'})}\n\n"
-                return
-            yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
-        )
+    @app.get("/chat/multi")
+    @rate_limiter.limit("10/minute")
+    async def chat_multi_get(request: Request, session_ids: str, question: str):
+        """Stream an answer that draws context from multiple tab sessions (GET for EventSource)."""
+        ids = [s.strip() for s in session_ids.split(",") if s.strip()]
+        return _make_multi_stream_response(manager, ids, question)
 
     # ── Chat UI (server-rendered) ──────────────────────────────
 
@@ -393,4 +252,149 @@ async def _run_chain(session, question: str) -> dict:
     return await loop.run_in_executor(
         None,
         lambda: session.chat_session.invoke(question),
+    )
+
+
+# ── SSE streaming helpers ─────────────────────────────────────
+
+_STREAM_END = object()
+
+
+def _next_token(gen):
+    """Wrapper around next() that converts StopIteration to a sentinel."""
+    try:
+        return next(gen)
+    except StopIteration as e:
+        return _STREAM_END, e.value
+
+
+def _make_stream_response(manager, session_id: str, question: str):
+    """Build a StreamingResponse for single-tab SSE streaming."""
+    session = manager.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found. Please reload the page to start a new session.",
+        )
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        gen = await loop.run_in_executor(
+            None,
+            lambda: session.chat_session.stream(question),
+        )
+        sources = []
+        try:
+            while True:
+                result = await loop.run_in_executor(None, _next_token, gen)
+                if isinstance(result, tuple) and result[0] is _STREAM_END:
+                    meta = result[1] or {}
+                    sources = meta.get("source_documents", [])
+                    break
+                yield f"data: {json.dumps({'token': result})}\n\n"
+        except Exception:
+            logger.exception("Streaming failed for session %s", session_id)
+            yield f"data: {json.dumps({'error': 'Stream failed'})}\n\n"
+            return
+        yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _make_multi_stream_response(manager, session_ids: list[str], question: str):
+    """Build a StreamingResponse for multi-tab SSE streaming."""
+    sessions = manager.get_sessions(session_ids)
+    if not sessions:
+        raise HTTPException(
+            status_code=404,
+            detail="No valid sessions found for the given IDs.",
+        )
+
+    def _multi_stream():
+        all_docs = []
+        docs_by_tab = {}
+        tab_labels = {}
+        for s in sessions:
+            docs = s.chat_session.retriever.invoke(question)
+            for doc in docs:
+                doc.metadata["_tab_title"] = s.title
+                doc.metadata["_tab_url"] = s.url
+            all_docs.extend(docs)
+            docs_by_tab[s.session_id] = docs
+            tab_labels[s.session_id] = s.title
+
+        num_tabs = len(sessions)
+        per_tab_min = max(1, 8 // num_tabs)
+        total_budget = max(8, num_tabs * 2)
+        top_docs = []
+        used = set()
+
+        for sid, docs in docs_by_tab.items():
+            for doc in docs[:per_tab_min]:
+                top_docs.append(doc)
+                used.add(id(doc))
+
+        remaining = total_budget - len(top_docs)
+        for doc in all_docs:
+            if remaining <= 0:
+                break
+            if id(doc) not in used:
+                top_docs.append(doc)
+                used.add(id(doc))
+                remaining -= 1
+
+        context_parts = []
+        sources = []
+        for doc in top_docs:
+            tab_title = doc.metadata.get("_tab_title", "Unknown")
+            snippet = doc.page_content[:200]
+            context_parts.append(f"[From: {tab_title}]\n{doc.page_content}")
+            sources.append({"text": snippet, "tab": tab_title})
+
+        context = "\n\n".join(context_parts)
+
+        primary = sessions[0].chat_session
+        formatted = primary.prompt.invoke({
+            "context": context,
+            "chat_history": [],
+            "question": question,
+        })
+        for token in primary.llm.stream(formatted.to_messages()):
+            text = token.content if hasattr(token, "content") else str(token)
+            yield text
+
+        return {"source_documents": sources}
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        gen = await loop.run_in_executor(None, _multi_stream)
+        sources = []
+        try:
+            while True:
+                result = await loop.run_in_executor(None, _next_token, gen)
+                if isinstance(result, tuple) and result[0] is _STREAM_END:
+                    meta = result[1] or {}
+                    sources = meta.get("source_documents", [])
+                    break
+                yield f"data: {json.dumps({'token': result})}\n\n"
+        except Exception:
+            logger.exception("Multi-tab streaming failed")
+            yield f"data: {json.dumps({'error': 'Stream failed'})}\n\n"
+            return
+        yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )

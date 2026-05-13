@@ -311,55 +311,58 @@
           this.typing = true;
 
           try {
-            const body = this.selectedSessionIds.length > 0
-              ? { session_ids: this.selectedSessionIds, question: q }
-              : { session_id: this.sessionId, question: q };
-            const endpoint = this.selectedSessionIds.length > 0
-              ? "/chat/multi" : "/chat/stream";
-
-            const resp = await fetch(endpoint, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            });
-
-            if (!resp.ok) {
-              const errBody = await resp.json().catch(() => ({}));
-              throw new Error(errBody.detail || `Error ${resp.status}`);
+            let url;
+            if (this.selectedSessionIds.length > 0) {
+              const ids = encodeURIComponent(this.selectedSessionIds.join(","));
+              url = `/chat/multi?session_ids=${ids}&question=${encodeURIComponent(q)}`;
+            } else {
+              url = `/chat/stream?session_id=${encodeURIComponent(this.sessionId)}&question=${encodeURIComponent(q)}`;
             }
 
-            this.typing = false;
-            this.streamingText = "";
-
-            const reader = resp.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
+            const self = this;
             let fullText = "";
             let sources = [];
 
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split("\n");
-              buffer = lines.pop() || "";
+            await new Promise((resolve, reject) => {
+              const es = new EventSource(url);
 
-              for (const line of lines) {
-                if (!line.startsWith("data: ")) continue;
-                const payload = JSON.parse(line.slice(6));
-                if (payload.token !== undefined) {
-                  fullText += payload.token;
-                  this.streamingText = fullText;
-                  this.scrollToBottom();
+              es.onopen = () => {
+                self.typing = false;
+                self.streamingText = "";
+              };
+
+              es.onmessage = (event) => {
+                try {
+                  const payload = JSON.parse(event.data);
+                  if (payload.token !== undefined) {
+                    fullText += payload.token;
+                    self.streamingText = fullText;
+                    self.scrollToBottom();
+                  }
+                  if (payload.done) {
+                    sources = payload.sources || [];
+                    es.close();
+                    resolve();
+                  }
+                  if (payload.error) {
+                    es.close();
+                    reject(new Error(payload.error));
+                  }
+                } catch (e) {
+                  es.close();
+                  reject(e);
                 }
-                if (payload.done) {
-                  sources = payload.sources || [];
+              };
+
+              es.onerror = () => {
+                es.close();
+                if (!fullText) {
+                  reject(new Error("Connection failed"));
+                } else {
+                  resolve(); // stream may have ended normally
                 }
-                if (payload.error) {
-                  throw new Error(payload.error);
-                }
-              }
-            }
+              };
+            });
 
             // Move from streaming to permanent message
             this.streamingText = "";
