@@ -132,8 +132,9 @@
       background: var(--bg-input); border: 1px solid var(--border); cursor: pointer;
     }
     .tab-chip input { margin: 0; }
-    .tab-chip.not-indexed { opacity: 0.5; font-style: italic; }
-    .tab-chip.indexing { opacity: 0.7; }
+    .tab-chip.not-indexed { opacity: 0.5; font-style: italic; cursor: pointer; }
+    .tab-chip.indexing { opacity: 0.7; cursor: wait; }
+    .tab-chip.selected { background: #4a5568; border-color: #63b3ed; }
     .indexing-indicator { font-size: 0.75em; margin-left: 2px; }
 
     /* Hide Alpine.js x-cloak elements until ready */
@@ -161,11 +162,17 @@
       <span class="multi-tab-label">Select tabs to include</span>
       <div class="multi-tab-list">
         <template x-for="tab in tabs" :key="tab.tab_id">
-          <label class="tab-chip" :class="{ 'not-indexed': !tab.indexed && !tab._indexing, 'indexing': tab._indexing }">
+          <label class="tab-chip"
+                 :class="{
+                   'not-indexed': !tab.indexed && !tab._indexing,
+                   'indexing': tab._indexing,
+                   'selected': selectedSessionIds.includes(tab.session_id)
+                 }"
+                 @click.prevent="toggleTab(tab)">
             <input type="checkbox"
                    :checked="selectedSessionIds.includes(tab.session_id)"
                    :disabled="tab._indexing"
-                   @change="toggleTab(tab, $event.target.checked)">
+                   @click.prevent>
             <span x-text="(tab.title || tab.url || 'Untitled').slice(0, 30)"></span>
             <span x-show="tab._indexing" class="indexing-indicator">⏳</span>
           </label>
@@ -388,17 +395,22 @@
           } catch { this.tabs = []; }
         },
 
-        toggleTab(tab, checked) {
-          if (!checked) {
+        toggleTab(tab) {
+          if (tab._indexing) return;
+
+          // Already selected → deselect
+          if (tab.session_id && this.selectedSessionIds.includes(tab.session_id)) {
             this.selectedSessionIds = this.selectedSessionIds.filter(id => id !== tab.session_id);
             return;
           }
+
+          // Indexed tab → select immediately
           if (tab.indexed && tab.session_id) {
             this.selectedSessionIds.push(tab.session_id);
             return;
           }
-          // Unindexed tab — trigger on-demand indexing
-          // Replace the tab object in the array so Alpine detects the change
+
+          // Unindexed tab → trigger on-demand indexing
           const idx = this.tabs.findIndex(t => t.tab_id === tab.tab_id);
           if (idx !== -1) this.tabs[idx] = { ...tab, _indexing: true };
           window.parent.postMessage({ type: "INDEX_TAB", tabId: parseInt(tab.tab_id) }, "*");
