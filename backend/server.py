@@ -227,6 +227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def _multi_stream():
             # Retrieve from all sessions' vectorstores
             all_docs = []
+            docs_by_tab = {}
             tab_labels = {}
             for s in sessions:
                 docs = s.chat_session.retriever.invoke(req.question)
@@ -234,11 +235,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     doc.metadata["_tab_title"] = s.title
                     doc.metadata["_tab_url"] = s.url
                 all_docs.extend(docs)
+                docs_by_tab[s.session_id] = docs
                 tab_labels[s.session_id] = s.title
 
-            # Score and take top-k across all tabs
-            all_docs.sort(key=lambda d: len(d.page_content), reverse=True)
-            top_docs = all_docs[:6]
+            # Ensure at least 1 doc per tab, then fill remaining slots
+            num_tabs = len(sessions)
+            per_tab_min = max(1, 8 // num_tabs)  # scale up total with more tabs
+            total_budget = max(8, num_tabs * 2)   # at least 2 per tab
+            top_docs = []
+            used = set()
+
+            # Round 1: take top per_tab_min docs from each tab
+            for sid, docs in docs_by_tab.items():
+                for doc in docs[:per_tab_min]:
+                    top_docs.append(doc)
+                    used.add(id(doc))
+
+            # Round 2: fill remaining budget from all docs (best variety)
+            remaining = total_budget - len(top_docs)
+            for doc in all_docs:
+                if remaining <= 0:
+                    break
+                if id(doc) not in used:
+                    top_docs.append(doc)
+                    used.add(id(doc))
+                    remaining -= 1
 
             # Build combined context with tab attribution
             context_parts = []
