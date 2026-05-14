@@ -69,12 +69,18 @@
 
     // Listen for messages from the iframe (backend-served page)
     window.addEventListener("message", (e) => {
+      if (!chrome.runtime?.id) {
+        // Extension context invalidated (reloaded/updated) — close panel gracefully
+        closePanel();
+        return;
+      }
       if (e.data.type === "CLOSE_PANEL") {
         closePanel();
-        chrome.runtime.sendMessage({ type: "PANEL_CLOSED" });
+        chrome.runtime.sendMessage({ type: "PANEL_CLOSED" }).catch(() => {});
       }
       if (e.data.type === "RESET_SESSION") {
         chrome.runtime.sendMessage({ type: "RESET_SESSION" }, (resp) => {
+          if (chrome.runtime.lastError) return;
           if (resp && resp.success) {
             iframe.src = `${API_BASE}/chat-ui?session_id=${encodeURIComponent(resp.sessionId)}`;
           }
@@ -82,6 +88,7 @@
       }
       if (e.data.type === "INDEX_TAB") {
         chrome.runtime.sendMessage({ type: "INDEX_TAB", tabId: e.data.tabId }, (resp) => {
+          if (chrome.runtime.lastError) return;
           if (iframe.contentWindow) {
             iframe.contentWindow.postMessage({ type: "TAB_INDEXED", tabId: e.data.tabId, success: resp?.success }, "*");
           }
