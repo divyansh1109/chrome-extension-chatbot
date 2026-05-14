@@ -252,7 +252,7 @@
         question: "",
         isProcessing: false,
         typing: false,
-        streamingText: "",
+        streamingText: "",  // kept for template binding
         multiTabOpen: false,
         tabs: [],
         selectedSessionIds: [],
@@ -311,61 +311,29 @@
           this.typing = true;
 
           try {
-            let url;
-            if (this.selectedSessionIds.length > 0) {
-              const ids = encodeURIComponent(this.selectedSessionIds.join(","));
-              url = `/chat/multi?session_ids=${ids}&question=${encodeURIComponent(q)}`;
-            } else {
-              url = `/chat/stream?session_id=${encodeURIComponent(this.sessionId)}&question=${encodeURIComponent(q)}`;
-            }
+            const body = this.selectedSessionIds.length > 0
+              ? { session_ids: this.selectedSessionIds, question: q }
+              : { session_id: this.sessionId, question: q };
+            const endpoint = this.selectedSessionIds.length > 0
+              ? "/chat/multi" : "/chat/stream";
 
-            const self = this;
-            let fullText = "";
-            let sources = [];
-
-            await new Promise((resolve, reject) => {
-              const es = new EventSource(url);
-
-              es.onopen = () => {
-                self.typing = false;
-                self.streamingText = "";
-              };
-
-              es.onmessage = (event) => {
-                try {
-                  const payload = JSON.parse(event.data);
-                  if (payload.token !== undefined) {
-                    fullText += payload.token;
-                    self.streamingText = fullText;
-                    self.scrollToBottom();
-                  }
-                  if (payload.done) {
-                    sources = payload.sources || [];
-                    es.close();
-                    resolve();
-                  }
-                  if (payload.error) {
-                    es.close();
-                    reject(new Error(payload.error));
-                  }
-                } catch (e) {
-                  es.close();
-                  reject(e);
-                }
-              };
-
-              es.onerror = () => {
-                es.close();
-                if (!fullText) {
-                  reject(new Error("Connection failed"));
-                } else {
-                  resolve(); // stream may have ended normally
-                }
-              };
+            const resp = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
             });
 
-            // Move from streaming to permanent message
-            this.streamingText = "";
+            if (!resp.ok) {
+              const errBody = await resp.json().catch(() => ({}));
+              throw new Error(errBody.detail || `Error ${resp.status}`);
+            }
+
+            const data = await resp.json();
+            this.typing = false;
+
+            const fullText = data.answer || "";
+            const sources = data.sources || [];
+
             this.messages.push({ role: "bot", text: fullText, sources });
             this.scrollToBottom();
 
@@ -381,7 +349,6 @@
 
           } catch (err) {
             this.typing = false;
-            this.streamingText = "";
             this.messages.push({ role: "bot", text: "⚠️ " + err.message, isError: true });
             this.scrollToBottom();
           }

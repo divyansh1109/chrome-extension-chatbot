@@ -163,21 +163,18 @@ class TestChatEndpoint:
 class TestChatStreamEndpoint:
     @patch("backend.session_manager.ChatSession")
     @patch("backend.session_manager.build_vectorstore")
-    def test_stream_returns_tokens_and_done(
+    def test_stream_returns_answer(
         self, mock_build_vs, mock_chat_session_cls, client
     ):
         mock_vs = MagicMock()
         mock_vs.index.ntotal = 3
         mock_build_vs.return_value = mock_vs
 
-        # Build a mock chat_session with a stream() that yields tokens
-        def fake_stream(question):
-            yield "Hello"
-            yield " world"
-            return {"answer": "Hello world", "source_documents": ["chunk1"]}
-
         mock_chat = MagicMock()
-        mock_chat.stream = fake_stream
+        mock_chat.invoke.return_value = {
+            "answer": "Hello world",
+            "source_documents": ["chunk1"],
+        }
         mock_chat_session_cls.return_value = mock_chat
 
         # Create session
@@ -191,29 +188,15 @@ class TestChatStreamEndpoint:
         )
         session_id = resp.json()["session_id"]
 
-        # Stream chat
+        # Chat
         resp = client.post(
             "/chat/stream",
             json={"session_id": session_id, "question": "Hi?"},
         )
         assert resp.status_code == 200
-        assert "text/event-stream" in resp.headers["content-type"]
-
-        # Parse SSE events
-        events = []
-        for line in resp.text.strip().split("\n"):
-            if line.startswith("data: "):
-                events.append(json.loads(line[6:]))
-
-        # Should have token events and a done event
-        token_events = [e for e in events if "token" in e]
-        done_events = [e for e in events if e.get("done")]
-
-        assert len(token_events) == 2
-        assert token_events[0]["token"] == "Hello"
-        assert token_events[1]["token"] == " world"
-        assert len(done_events) == 1
-        assert done_events[0]["sources"] == ["chunk1"]
+        data = resp.json()
+        assert data["answer"] == "Hello world"
+        assert data["sources"] == ["chunk1"]
 
     def test_stream_with_unknown_session(self, client):
         resp = client.post(
